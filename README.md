@@ -9,14 +9,7 @@ A rich status line for [Claude Code](https://claude.ai/code) — model info, con
 
 ## Preview
 
-```
-Claude Sonnet 4.6  │  12% (24k/200k) cache:45%  $0.08 ($0.03/1k)  │  my-project (main 3~ ↑1 2h)  │  15m 12msg  │  default
-
-5h  ●●○○○○○○○○   18%  (3h 42m) → 6:30pm
-7d  ●●●●○○○○○○   40%  (2d 14h) → apr 9, 6:30pm
-
-bat 87%  │  mem 6.2gb free  │  net ●  │  2:34pm
-```
+![preview](preview.svg)
 
 ## What it shows
 
