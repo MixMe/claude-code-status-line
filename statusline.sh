@@ -71,10 +71,16 @@ iso_to_epoch() {
 
     # BSD date (macOS)
     local stripped="${iso_str%%.*}"
+    local is_utc=false
+    [[ "$iso_str" == *Z* ]] || [[ "$iso_str" == *+00:00* ]] && is_utc=true
     stripped="${stripped%%Z}"
     stripped="${stripped%%+*}"
     stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"
-    epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    if $is_utc; then
+        epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    else
+        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    fi
     [ -n "$epoch" ] && { echo "$epoch"; return 0; }
 
     return 1
