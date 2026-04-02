@@ -60,11 +60,25 @@ bat 87%  │  mem 6.2gb free  │  net ●  │  2:34pm
 
 ## Install
 
+**1. Install prerequisites**
+
+macOS:
+```bash
+brew install jq
+```
+
+Linux (Debian/Ubuntu):
+```bash
+sudo apt install jq curl
+```
+
+**2. Run the installer**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
 ```
 
-That's it. The script copies `statusline.sh` to `~/.claude/statusline.sh`, patches `~/.claude/settings.json`, and asks for your time format preference. Restart Claude Code to apply.
+The script copies `statusline.sh` to `~/.claude/statusline.sh`, patches `~/.claude/settings.json`, and asks for your time format preference. Restart Claude Code to apply.
 
 ### Manual settings.json entry
 
