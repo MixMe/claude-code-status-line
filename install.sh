@@ -16,7 +16,10 @@ fi
 
 echo "Time format [12h = 2:34pm / 24h = 14:34] (current: ${time_format}):"
 printf "  Enter 12h or 24h, or press Enter to keep current: "
-read -r input_fmt </dev/tty
+input_fmt=""
+if [ -t 0 ] || [ -c /dev/tty ] && { exec </dev/tty; } 2>/dev/null; then
+    read -r input_fmt </dev/tty 2>/dev/null || input_fmt=""
+fi
 input_fmt=$(echo "$input_fmt" | tr -d '[:space:]')
 case "$input_fmt" in
     12h|24h) time_format="$input_fmt" ;;
