@@ -1,30 +1,50 @@
 # claude-code-statusline
 
-A rich status line for [Claude Code](https://claude.ai/code) that shows model info, context usage, git branch, session cost, duration, effort level, and live rate-limit bars.
+A rich status line for [Claude Code](https://claude.ai/code) — model info, context usage, cache efficiency, session cost, git status, rate-limit bars, battery, memory, and more.
 
 ## Preview
 
 ```
-Claude Sonnet 4.6  │  12%  (24k/200k)  $0.08  │  my-project (main)  │  5m  │  default
+Claude Sonnet 4.6  │  12% (24k/200k) cache:45%  $0.08 ($0.03/1k)  │  my-project (main 3~ ↑1 2h)  │  15m 12msg  │  default
 
-5h  ●●○○○○○○○○  18%  (3h 42m) → 6:30pm
-7d  ●●●●○○○○○○  40%  (2d 14h) → apr 9, 6:30pm
+5h  ●●○○○○○○○○   18%  (3h 42m) → 6:30pm
+7d  ●●●●○○○○○○   40%  (2d 14h) → apr 9, 6:30pm
+
+bat 87%  │  mem 6.2gb free  │  net ●  │  2:34pm
 ```
 
 ## What it shows
 
-**Line 1**
-- Model display name
-- Context window usage — percentage + token count, color-coded (green → orange → yellow → red)
-- Session cost (when available)
-- Current directory name + git branch (with `*` when dirty)
-- Session duration
-- Effort level (`default` / `high` / `low`)
+**Line 1 — Session**
+| Field | Description |
+|---|---|
+| Model name | Color-coded by tier: cyan = Haiku, blue = Sonnet, magenta = Opus |
+| Context % | Usage vs window size, color-coded green → orange → yellow → red |
+| Cache hit rate | `cache_read / total_tokens` — higher = cheaper, faster responses |
+| Session cost | Total `$` spent this session |
+| Cost per 1k tokens | Efficiency indicator for the session |
+| Directory | Current working directory name |
+| Git branch | Branch name with dirty file count (`3~`), ahead/behind (`↑1↓0`), last commit age (`2h`) |
+| Session duration | How long the current session has been running |
+| Message count | Number of messages in the session |
+| Effort level | `default` / `high` / `low` |
+| Thinking | `thinking` label shown when extended thinking is active |
+| Permissions | `!perms` warning shown when `bypassPermissions` is enabled |
 
-**Line 2**
-- 5-hour rate limit bar + time left until reset
-- 7-day rate limit bar + time left until reset
-- Extra usage credits (when enabled on your account)
+**Line 2 — Rate limits**
+| Field | Description |
+|---|---|
+| 5h bar | 5-hour usage bar with % and time until reset |
+| 7d bar | 7-day usage bar with % and date/time until reset |
+| Extra | Monthly extra usage credits (shown only when enabled) |
+
+**Line 3 — System**
+| Field | Description |
+|---|---|
+| Battery | Level with color warning at ≤40% (yellow) and ≤20% (red). Hidden on desktop/server. |
+| Memory | Free RAM (macOS: free + inactive pages; Linux: MemAvailable) |
+| Internet | `●` up / `○` down — pings 1.1.1.1, cached 30s |
+| Local time | Current time |
 
 ## Requirements
 
@@ -39,7 +59,9 @@ Claude Sonnet 4.6  │  12%  (24k/200k)  $0.08  │  my-project (main)  │  5m 
 bash install.sh
 ```
 
-Then add to `~/.claude/settings.json`:
+`install.sh` copies `statusline.sh` to `~/.claude/statusline.sh` and automatically patches `~/.claude/settings.json` with the required `statusLine` config. Restart Claude Code to apply.
+
+### Manual settings.json entry
 
 ```json
 {
@@ -50,13 +72,9 @@ Then add to `~/.claude/settings.json`:
 }
 ```
 
-Restart Claude Code to apply.
+## How rate limits work
 
-## Rate limit display
-
-The script fetches usage from `https://api.anthropic.com/api/oauth/usage` using your stored Claude Code OAuth token. Results are cached in `/tmp/claude/statusline-usage-cache.json` for 60 seconds to avoid excessive API calls.
-
-Works automatically if you're logged in to Claude Code via OAuth (the default). No API key needed.
+The script fetches live usage from `https://api.anthropic.com/api/oauth/usage` using the OAuth token stored by Claude Code. Results are cached in `/tmp/claude/statusline-usage-cache.json` for 60 seconds. Works automatically if you're logged in via OAuth — no API key needed.
 
 ## Customization
 
@@ -70,7 +88,7 @@ my-frontend=ui
 my-shared-lib=shared
 ```
 
-Then add this to `statusline.sh` in the working directory section:
+Then add to the working directory section of `statusline.sh`:
 
 ```bash
 labels_file="$HOME/.config/claude-statusline/labels"
@@ -81,24 +99,17 @@ if [ -f "$labels_file" ]; then
 fi
 ```
 
-### Service health indicator
+### Custom service health indicator
 
-To add a health check for a local service (e.g. a database, vector store, or dev server), add before the output section:
+To add a health ping for a local service (database, dev server, etc.), add before the output section:
 
 ```bash
-service_up=false
 if curl -sf --max-time 1 "http://localhost:YOUR_PORT/health" >/dev/null 2>&1; then
-    service_up=true
-fi
-
-if $service_up; then
-    service_indicator="${green}service ●${reset}"
+    sys_parts+=("${green}myservice ●${reset}")
 else
-    service_indicator="${dim}service ○${reset}"
+    sys_parts+=("${dim}myservice ○${reset}")
 fi
 ```
-
-Then prepend `$service_indicator${sep}` to `$rate_lines`.
 
 ## License
 
