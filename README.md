@@ -1,5 +1,10 @@
 # claude-code-statusline
 
+[![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![Shell](https://img.shields.io/badge/shell-bash-blue)
+
 A rich status line for [Claude Code](https://claude.ai/code) — model info, context usage, cache efficiency, session cost, git status, rate-limit bars, battery, memory, and more.
 
 ## Preview
