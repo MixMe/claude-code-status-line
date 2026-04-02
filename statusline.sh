@@ -335,7 +335,18 @@ else
 fi
 
 # ── Local time ────────────────────────────────────────
-local_time=$(date +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
+time_format="12h"
+config_file="$HOME/.config/claude-statusline/config"
+[ -f "$config_file" ] && {
+    fmt=$(grep '^TIME_FORMAT=' "$config_file" 2>/dev/null | cut -d= -f2)
+    [ -n "$fmt" ] && time_format="$fmt"
+}
+
+if [ "$time_format" = "24h" ]; then
+    local_time=$(date +"%H:%M" 2>/dev/null)
+else
+    local_time=$(date +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
+fi
 
 # ── Build line 1 ─────────────────────────────────────
 ctx_color=$(color_for_pct "$ctx_pct")
