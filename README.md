@@ -61,10 +61,10 @@ bat 87%  │  mem 6.2gb free  │  net ●  │  2:34pm
 ## Install
 
 ```bash
-bash install.sh
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
 ```
 
-`install.sh` copies `statusline.sh` to `~/.claude/statusline.sh` and automatically patches `~/.claude/settings.json` with the required `statusLine` config. Restart Claude Code to apply.
+That's it. The script copies `statusline.sh` to `~/.claude/statusline.sh`, patches `~/.claude/settings.json`, and asks for your time format preference. Restart Claude Code to apply.
 
 ### Manual settings.json entry
 
