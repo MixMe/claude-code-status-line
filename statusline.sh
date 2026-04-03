@@ -195,7 +195,7 @@ session_duration=""
 if [ -n "$total_duration_ms" ]; then
     elapsed=$(( total_duration_ms / 1000 ))
     if [ "$elapsed" -ge 3600 ]; then
-        session_duration="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"
+        session_duration="$(( elapsed / 3600 ))h $(( (elapsed % 3600) / 60 ))m"
     elif [ "$elapsed" -ge 60 ]; then
         session_duration="$(( elapsed / 60 ))m"
     else
