@@ -49,8 +49,8 @@ A rich status line for [Claude Code](https://claude.ai/code) — model info, con
 - `bash` 4+
 - `jq`
 - `curl`
-- Claude Code v2.1.80+ (for stdin rate limits)
-- macOS or Linux
+- Claude Code v2.1.80+
+- macOS, Linux, or Windows (WSL / Git Bash)
 
 ## Install / Update
 
@@ -62,15 +62,39 @@ curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/
 
 Restart Claude Code to apply.
 
-**Prerequisites:** `jq` and `curl` must be installed:
+### macOS
 
 ```bash
-# macOS
 brew install jq
-
-# Linux (Debian/Ubuntu)
-sudo apt install jq curl
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
 ```
+
+### Linux (Debian/Ubuntu)
+
+```bash
+sudo apt install jq curl
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
+```
+
+### Windows
+
+**Option A — WSL (recommended):**
+
+```bash
+sudo apt install jq curl
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
+```
+
+**Option B — Git Bash** (comes with [Git for Windows](https://git-scm.com/downloads/win)):
+
+1. Install `jq`: download from [jqlang.org](https://jqlang.github.io/jq/download/), place `jq.exe` in a directory on your PATH (e.g. `C:\Program Files\Git\usr\bin\`).
+2. Open Git Bash and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
+```
+
+> Note: Battery and memory indicators require system-specific tools and may not display on Windows.
 
 ## How rate limits work
 
