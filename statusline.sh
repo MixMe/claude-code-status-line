@@ -1,9 +1,9 @@
 #!/bin/bash
 set -f
 
-# claude-code-statusline v1.1.0
-VERSION="1.1.0"
-REPO="anthropics-user/claude-code-statusline"  # TODO: update with real repo
+# claude-code-statusline v1.2.0
+VERSION="1.2.0"
+REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
 
@@ -65,7 +65,6 @@ build_bar() {
     printf "${bar_color}${filled_str}${dim}${empty_str}${reset}"
 }
 
-# Format unix epoch to human-readable time
 format_epoch_as_time() {
     local epoch="$1"
     local style="${2:-time}"
@@ -89,7 +88,6 @@ format_epoch_as_time() {
     printf "%s" "$result"
 }
 
-# Format time remaining until epoch
 format_epoch_time_left() {
     local epoch="$1"
     [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
@@ -112,30 +110,6 @@ format_epoch_time_left() {
     fi
 }
 
-# ISO to epoch (for session start time etc.)
-iso_to_epoch() {
-    local iso_str="$1"
-    local epoch
-
-    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
-    [ -n "$epoch" ] && { echo "$epoch"; return 0; }
-
-    local stripped="${iso_str%%.*}"
-    local is_utc=false
-    [[ "$iso_str" == *Z* ]] || [[ "$iso_str" == *+00:00* ]] && is_utc=true
-    stripped="${stripped%%Z}"
-    stripped="${stripped%%+*}"
-    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"
-    if $is_utc; then
-        epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    else
-        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    fi
-    [ -n "$epoch" ] && { echo "$epoch"; return 0; }
-
-    return 1
-}
-
 format_age() {
     local ts="$1"
     [ -z "$ts" ] && return
@@ -153,26 +127,49 @@ format_age() {
     fi
 }
 
+# Shell-safe value escaper for node output
+node_parse() {
+    node -e "
+const fs=require('fs');
+const d=JSON.parse(fs.readFileSync(0,'utf8'));
+const s=fs.existsSync('$HOME/.claude/settings.json')
+  ? JSON.parse(fs.readFileSync('$HOME/.claude/settings.json','utf8'))
+  : {};
+const v=(k,val)=>{
+  if(val===undefined||val===null) val='';
+  console.log(k+'='+String(val));
+};
+v('model_name',     d.model?.display_name ?? 'Claude');
+v('ctx_size',       d.context_window?.context_window_size ?? 200000);
+v('input_tokens',   d.context_window?.current_usage?.input_tokens ?? 0);
+v('cache_create',   d.context_window?.current_usage?.cache_creation_input_tokens ?? 0);
+v('cache_read',     d.context_window?.current_usage?.cache_read_input_tokens ?? 0);
+v('ctx_pct',        d.context_window?.used_percentage ?? 0);
+v('exceeds_200k',   d.exceeds_200k_tokens ?? false);
+v('total_duration_ms', d.cost?.total_duration_ms ?? '');
+v('cwd',            d.workspace?.current_dir ?? d.cwd ?? '');
+v('five_pct',       d.rate_limits?.five_hour?.used_percentage ?? '');
+v('five_resets_epoch', d.rate_limits?.five_hour?.resets_at ?? '');
+v('seven_pct',      d.rate_limits?.seven_day?.used_percentage ?? '');
+v('seven_resets_epoch', d.rate_limits?.seven_day?.resets_at ?? '');
+v('effort',         s.effortLevel ?? 'default');
+v('thinking_setting', s.thinking ?? '');
+v('bypass_perms',   s.bypassPermissions ?? false);
+" <<< "$input"
+}
+
 mkdir -p /tmp/claude
 
-# ── Parse JSON input ──────────────────────────────────
-model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
+# ── Parse stdin + settings in one node call ──────────
+while IFS='=' read -r key val; do
+    declare "$key=$val"
+done < <(node_parse)
 
-ctx_size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
-[ "$ctx_size" -eq 0 ] 2>/dev/null && ctx_size=200000
+[ "$ctx_size" = "0" ] && ctx_size=200000
 
-input_tokens=$(echo "$input" | jq -r '.context_window.current_usage.input_tokens // 0')
-cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creation_input_tokens // 0')
-cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
 ctx_used=$(( input_tokens + cache_create + cache_read ))
-
 used_fmt=$(format_tokens "$ctx_used")
 total_fmt=$(format_tokens "$ctx_size")
-
-ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0')
-[ "$ctx_pct" = "null" ] && ctx_pct=0
-
-msg_count=$(echo "$input" | jq -r 'if .messages then (.messages | length) else empty end' 2>/dev/null)
 
 # ── Model tier color ──────────────────────────────────
 model_color="$blue"
@@ -190,16 +187,12 @@ if [ "$ctx_used" -gt 0 ]; then
 fi
 
 # ── Context overflow warning ─────────────────────────
-exceeds_200k=$(echo "$input" | jq -r '.exceeds_200k_tokens // false')
 ctx_warning=""
-if [ "$exceeds_200k" = "true" ]; then
-    ctx_warning="${red}long chat${reset}"
-fi
+[ "$exceeds_200k" = "true" ] && ctx_warning="${red}long chat${reset}"
 
-# ── Session duration (from stdin cost.total_duration_ms) ─
+# ── Session duration ─────────────────────────────────
 session_duration=""
-total_duration_ms=$(echo "$input" | jq -r '.cost.total_duration_ms // empty')
-if [ -n "$total_duration_ms" ] && [ "$total_duration_ms" != "null" ]; then
+if [ -n "$total_duration_ms" ]; then
     elapsed=$(( total_duration_ms / 1000 ))
     if [ "$elapsed" -ge 3600 ]; then
         session_duration="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"
@@ -211,24 +204,14 @@ if [ -n "$total_duration_ms" ] && [ "$total_duration_ms" != "null" ]; then
 fi
 
 # ── Effort + thinking + permissions ──────────────────
-settings_path="$HOME/.claude/settings.json"
-effort="default"
 thinking_on=false
-bypass_perms=false
+[ "$thinking_setting" = "true" ] || [ "$thinking_setting" = "enabled" ] && thinking_on=true
 
-if [ -f "$settings_path" ]; then
-    effort=$(jq -r '.effortLevel // "default"' "$settings_path" 2>/dev/null)
-    t=$(jq -r '.thinking // empty' "$settings_path" 2>/dev/null)
-    [ "$t" = "true" ] || [ "$t" = "enabled" ] && thinking_on=true
-    bp=$(jq -r '.bypassPermissions // false' "$settings_path" 2>/dev/null)
-    [ "$bp" = "true" ] && bypass_perms=true
-fi
-t2=$(echo "$input" | jq -r '.thinking.enabled // empty' 2>/dev/null)
-[ "$t2" = "true" ] && thinking_on=true
+bypass_perms_on=false
+[ "$bypass_perms" = "true" ] && bypass_perms_on=true
 
 # ── Working directory & git ───────────────────────────
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
-[ -z "$cwd" ] || [ "$cwd" = "null" ] && cwd=$(pwd)
+[ -z "$cwd" ] && cwd=$(pwd)
 dirname=$(basename "$cwd")
 
 git_branch=""
@@ -362,7 +345,6 @@ if [ -n "$git_branch" ]; then
 fi
 if [ -n "$session_duration" ]; then
     line1+="${sep}${dim}${session_duration}${reset}"
-    [ -n "$msg_count" ] && line1+=" ${dim}${msg_count}msg${reset}"
 fi
 line1+="${sep}"
 case "$effort" in
@@ -370,21 +352,14 @@ case "$effort" in
     low)  line1+="${dim}low${reset}" ;;
     *)    line1+="${dim}${effort}${reset}" ;;
 esac
-$thinking_on  && line1+=" ${cyan}thinking${reset}"
-$bypass_perms && line1+=" ${red}!perms${reset}"
+$thinking_on    && line1+=" ${cyan}thinking${reset}"
+$bypass_perms_on && line1+=" ${red}!perms${reset}"
 
 # ── Rate limits: stdin-first (zero API calls) ────────
-# Claude Code v2.1.80+ provides rate_limits in stdin JSON.
-# This is always fresh, free, and doesn't hit any API.
-five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
-five_resets_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
-seven_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
-seven_resets_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
-
 rate_lines=""
 bar_width=10
 
-if [ -n "$five_pct" ] && [ "$five_pct" != "null" ]; then
+if [ -n "$five_pct" ]; then
     five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
     five_reset=$(format_epoch_as_time "$five_resets_epoch" time)
     five_left=$(format_epoch_time_left "$five_resets_epoch")
@@ -398,7 +373,7 @@ if [ -n "$five_pct" ] && [ "$five_pct" != "null" ]; then
     fi
 fi
 
-if [ -n "$seven_pct" ] && [ "$seven_pct" != "null" ]; then
+if [ -n "$seven_pct" ]; then
     seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
     seven_reset=$(format_epoch_as_time "$seven_resets_epoch" datetime)
     seven_left=$(format_epoch_time_left "$seven_resets_epoch")
@@ -414,8 +389,6 @@ if [ -n "$seven_pct" ] && [ "$seven_pct" != "null" ]; then
 fi
 
 # ── Extra usage: API with rate-limit backoff (cached 180s) ─
-# extra_usage is NOT in stdin, so we still need the API for it.
-# But we cache aggressively and respect 429 backoff.
 get_oauth_token() {
     [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && { echo "$CLAUDE_CODE_OAUTH_TOKEN"; return 0; }
 
@@ -424,16 +397,16 @@ get_oauth_token() {
         blob=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
         if [ -n "$blob" ]; then
             local token
-            token=$(echo "$blob" | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-            [ -n "$token" ] && [ "$token" != "null" ] && { echo "$token"; return 0; }
+            token=$(echo "$blob" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).claudeAiOauth?.accessToken??'')}catch{console.log('')}})" 2>/dev/null)
+            [ -n "$token" ] && { echo "$token"; return 0; }
         fi
     fi
 
     local creds_file="$HOME/.claude/.credentials.json"
     if [ -f "$creds_file" ]; then
         local token
-        token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds_file" 2>/dev/null)
-        [ -n "$token" ] && [ "$token" != "null" ] && { echo "$token"; return 0; }
+        token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$creds_file','utf8')).claudeAiOauth?.accessToken??'')}catch{console.log('')}" 2>/dev/null)
+        [ -n "$token" ] && { echo "$token"; return 0; }
     fi
 
     echo ""
@@ -441,8 +414,7 @@ get_oauth_token() {
 
 extra_cache="/tmp/claude/statusline-extra-cache.json"
 extra_lock="/tmp/claude/statusline-extra.lock"
-extra_max_age=180   # 3 min cache
-extra_data=""
+extra_max_age=180
 
 # Check lock file (rate-limit backoff)
 locked=false
@@ -453,6 +425,7 @@ if [ -f "$extra_lock" ]; then
     [ "$lock_age" -lt "$blocked_for" ] && locked=true
 fi
 
+extra_data=""
 needs_extra_refresh=true
 if [ -f "$extra_cache" ]; then
     extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
@@ -465,7 +438,7 @@ fi
 
 if $needs_extra_refresh && ! $locked; then
     token=$(get_oauth_token)
-    if [ -n "$token" ] && [ "$token" != "null" ]; then
+    if [ -n "$token" ]; then
         http_response=$(curl -s -w "\n__HTTP_CODE__%{http_code}" --max-time 5 \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
@@ -478,45 +451,40 @@ if $needs_extra_refresh && ! $locked; then
 
         case "$http_code" in
             200)
-                if echo "$response_body" | jq -e '.extra_usage' >/dev/null 2>&1; then
+                has_extra=$(echo "$response_body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).extra_usage?'yes':'no')}catch{console.log('no')}})" 2>/dev/null)
+                if [ "$has_extra" = "yes" ]; then
                     extra_data="$response_body"
-                    # Atomic write: temp file + rename
                     tmp=$(mktemp /tmp/claude/extra-XXXXXX)
                     echo "$response_body" > "$tmp" && mv "$tmp" "$extra_cache"
                     rm -f "$extra_lock" 2>/dev/null
                 fi
                 ;;
-            429)
-                # Rate limited — back off for 300s
-                echo "300" > "$extra_lock"
-                ;;
-            401|403)
-                # Auth error — back off for 600s
-                echo "600" > "$extra_lock"
-                ;;
-            *)
-                # Other error — back off for 60s
-                echo "60" > "$extra_lock"
-                ;;
+            429) echo "300" > "$extra_lock" ;;
+            401|403) echo "600" > "$extra_lock" ;;
+            *) echo "60" > "$extra_lock" ;;
         esac
     fi
-    # Stale fallback: use old cache if fresh fetch failed, but max 10 min
     if [ -z "$extra_data" ] && [ -f "$extra_cache" ]; then
         extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
         extra_age=$(( $(date +%s) - extra_mtime ))
-        if [ "$extra_age" -lt 600 ]; then
-            extra_data=$(cat "$extra_cache" 2>/dev/null)
-        fi
+        [ "$extra_age" -lt 600 ] && extra_data=$(cat "$extra_cache" 2>/dev/null)
     fi
 fi
 
-# Append extra_usage to rate_lines if available
 if [ -n "$extra_data" ]; then
-    extra_enabled=$(echo "$extra_data" | jq -r '.extra_usage.is_enabled // false')
+    eval "$(echo "$extra_data" | node -e "
+let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+  try{
+    const j=JSON.parse(d).extra_usage;
+    if(!j||!j.is_enabled){console.log('extra_enabled=false');return}
+    console.log('extra_enabled=true');
+    console.log('extra_pct='+Math.round(j.utilization??0));
+    console.log('extra_used='+(j.used_credits/100).toFixed(2));
+    console.log('extra_limit='+(j.monthly_limit/100).toFixed(2));
+  }catch{console.log('extra_enabled=false')}
+})" 2>/dev/null)"
+
     if [ "$extra_enabled" = "true" ]; then
-        extra_pct=$(echo "$extra_data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
-        extra_used=$(echo "$extra_data" | jq -r '.extra_usage.used_credits // 0' | awk '{printf "%.2f", $1/100}')
-        extra_limit=$(echo "$extra_data" | jq -r '.extra_usage.monthly_limit // 0' | awk '{printf "%.2f", $1/100}')
         extra_bar=$(build_bar "$extra_pct" "$bar_width")
         extra_color=$(color_for_pct "$extra_pct")
 
@@ -527,7 +495,6 @@ if [ -n "$extra_data" ]; then
         rate_lines+="${white}extra${reset}  ${extra_bar} ${extra_color}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
         [ -n "$extra_reset" ] && rate_lines+=" ${dim}-> ${reset}${white}${extra_reset}${reset}"
 
-        # Staleness indicator for API-fetched data
         if [ -f "$extra_cache" ]; then
             extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
             extra_age=$(( $(date +%s) - extra_mtime ))
@@ -542,7 +509,7 @@ fi
 # ── Update check (cached 24h) ────────────────────────
 update_str=""
 update_cache="/tmp/claude/statusline-update-cache"
-update_max_age=86400  # 24 hours
+update_max_age=86400
 
 update_needs_check=true
 if [ -f "$update_cache" ]; then
@@ -552,10 +519,9 @@ if [ -f "$update_cache" ]; then
 fi
 
 if $update_needs_check; then
-    # Fetch latest version tag from GitHub (non-blocking, 3s timeout)
     latest_tag=$(curl -s --max-time 3 \
         "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-        | jq -r '.tag_name // empty' 2>/dev/null)
+        | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).tag_name??'')}catch{console.log('')}})" 2>/dev/null)
     if [ -n "$latest_tag" ]; then
         latest_ver="${latest_tag#v}"
         echo "$latest_ver" > "$update_cache"
@@ -565,7 +531,6 @@ fi
 if [ -f "$update_cache" ]; then
     latest_ver=$(cat "$update_cache" 2>/dev/null)
     if [ -n "$latest_ver" ] && [ "$latest_ver" != "$VERSION" ]; then
-        # Simple version comparison: if they differ, assume update available
         update_str="${yellow}update ${latest_ver}${reset}"
     fi
 fi

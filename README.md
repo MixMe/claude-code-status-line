@@ -46,11 +46,12 @@ A rich status line for [Claude Code](https://claude.ai/code) — model info, con
 
 ## Requirements
 
+- Claude Code v2.1.80+ (provides `node` and stdin rate limits)
 - `bash` 4+
-- `jq`
 - `curl`
-- Claude Code v2.1.80+
 - macOS, Linux, or Windows (WSL / Git Bash)
+
+No additional dependencies — uses `node` which ships with Claude Code.
 
 ## Install / Update
 
@@ -60,41 +61,23 @@ One command — installs or updates to the latest version:
 curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
 ```
 
-Restart Claude Code to apply.
-
-### macOS
-
-```bash
-brew install jq
-curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
-```
-
-### Linux (Debian/Ubuntu)
-
-```bash
-sudo apt install jq curl
-curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
-```
+Restart Claude Code to apply. Run the same command again to update.
 
 ### Windows
 
-**Option A — WSL (recommended):**
-
-```bash
-sudo apt install jq curl
-curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
-```
-
-**Option B — Git Bash** (comes with [Git for Windows](https://git-scm.com/downloads/win)):
-
-1. Install `jq`: download from [jqlang.org](https://jqlang.github.io/jq/download/), place `jq.exe` in a directory on your PATH (e.g. `C:\Program Files\Git\usr\bin\`).
-2. Open Git Bash and run:
+**WSL (recommended):**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
 ```
 
-> Note: Battery and memory indicators require system-specific tools and may not display on Windows.
+**Git Bash** (comes with [Git for Windows](https://git-scm.com/downloads/win)):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
+```
+
+> Note: Battery and memory indicators may not display on Windows.
 
 ## How rate limits work
 
