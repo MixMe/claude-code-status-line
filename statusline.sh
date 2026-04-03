@@ -40,10 +40,10 @@ format_tokens() {
 
 color_for_pct() {
     local pct=$1
-    if [ "$pct" -ge 90 ]; then printf "$red"
-    elif [ "$pct" -ge 70 ]; then printf "$yellow"
-    elif [ "$pct" -ge 50 ]; then printf "$orange"
-    else printf "$green"
+    if [ "$pct" -ge 90 ]; then printf '%b' "$red"
+    elif [ "$pct" -ge 70 ]; then printf '%b' "$yellow"
+    elif [ "$pct" -ge 50 ]; then printf '%b' "$orange"
+    else printf '%b' "$green"
     fi
 }
 
@@ -62,7 +62,7 @@ build_bar() {
     for ((i=0; i<filled; i++)); do filled_str+="●"; done
     for ((i=0; i<empty; i++)); do empty_str+="○"; done
 
-    printf "${bar_color}${filled_str}${dim}${empty_str}${reset}"
+    printf '%b' "${bar_color}${filled_str}${dim}${empty_str}${reset}"
 }
 
 format_epoch_as_time() {
@@ -100,11 +100,11 @@ format_epoch_time_left() {
     if [ "$remaining" -ge 86400 ]; then
         local d=$(( remaining / 86400 ))
         local h=$(( (remaining % 86400) / 3600 ))
-        [ "$h" -gt 0 ] && printf "${d}d ${h}h" || printf "${d}d"
+        [ "$h" -gt 0 ] && printf '%s' "${d}d ${h}h" || printf '%s' "${d}d"
     elif [ "$remaining" -ge 3600 ]; then
         local h=$(( remaining / 3600 ))
         local m=$(( (remaining % 3600) / 60 ))
-        [ "$m" -gt 0 ] && printf "${h}h ${m}m" || printf "${h}h"
+        [ "$m" -gt 0 ] && printf '%s' "${h}h ${m}m" || printf '%s' "${h}h"
     else
         printf "%dm" $(( remaining / 60 ))
     fi
@@ -161,6 +161,12 @@ v('bypass_perms',   s.bypassPermissions ?? false);
 mkdir -p /tmp/claude
 
 # ── Parse stdin + settings in one node call ──────────
+# Defaults (shellcheck SC2154: variables assigned via declare)
+model_name="Claude" ctx_size=200000 input_tokens=0 cache_create=0 cache_read=0
+ctx_pct=0 exceeds_200k=false total_duration_ms="" cwd=""
+five_pct="" five_resets_epoch="" seven_pct="" seven_resets_epoch=""
+effort="default" thinking_setting="" bypass_perms=false
+
 while IFS='=' read -r key val; do
     declare "$key=$val"
 done < <(node_parse)
@@ -472,6 +478,7 @@ if $needs_extra_refresh && ! $locked; then
 fi
 
 if [ -n "$extra_data" ]; then
+    extra_enabled=false extra_pct=0 extra_used="0.00" extra_limit="0.00"
     eval "$(echo "$extra_data" | node -e "
 let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
   try{
