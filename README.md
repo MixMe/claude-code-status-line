@@ -22,7 +22,13 @@ curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/
 
 Restart Claude Code to apply. No dependencies to install — uses `node` that ships with Claude Code.
 
-> **Windows:** run the same command in WSL or [Git Bash](https://git-scm.com/downloads/win).
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.ps1 | iex
+```
+
+Also works in WSL or [Git Bash](https://git-scm.com/downloads/win) with the `curl | bash` command above.
 
 ## What it shows
 
