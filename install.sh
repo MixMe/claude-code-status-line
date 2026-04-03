@@ -74,18 +74,25 @@ rm -f /tmp/claude/statusline-usage-cache.json /tmp/claude/statusline-extra-cache
       /tmp/claude/statusline-extra.lock /tmp/claude/statusline-update-cache 2>/dev/null
 
 # ── Patch settings.json ───────────────────────────────
-STATUS_LINE_VALUE='{"type":"command","command":"bash \"$HOME/.claude/statusline.sh\""}'
-
-if [ ! -f "$SETTINGS" ]; then
-    echo "{\"statusLine\": $STATUS_LINE_VALUE}" | jq . > "$SETTINGS"
-    echo "Created $SETTINGS"
-elif jq -e '.statusLine' "$SETTINGS" >/dev/null 2>&1; then
-    echo "statusLine already configured"
-else
-    tmp=$(mktemp)
-    jq --argjson v "$STATUS_LINE_VALUE" '. + {statusLine: $v}' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
-    echo "Updated $SETTINGS"
-fi
+node -e "
+const fs=require('fs');
+const path='$SETTINGS';
+const sl={type:'command',command:'bash \"\$HOME/.claude/statusline.sh\"'};
+let settings={};
+let action='';
+if(fs.existsSync(path)){
+  settings=JSON.parse(fs.readFileSync(path,'utf8'));
+  if(settings.statusLine){action='exists'}
+  else{settings.statusLine=sl;action='updated'}
+}else{
+  settings={statusLine:sl};action='created';
+}
+if(action!=='exists'){
+  fs.writeFileSync(path,JSON.stringify(settings,null,2)+'\n');
+}
+console.log(action==='exists'?'statusLine already configured':
+  action==='created'?'Created '+path:'Updated '+path);
+" 2>/dev/null
 
 echo ""
 echo "Installed v${VERSION}. Restart Claude Code to apply."
