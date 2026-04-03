@@ -70,8 +70,9 @@ fi
 echo "Time format: ${time_format}"
 
 # ── Clear stale caches ───────────────────────────────
-rm -f /tmp/claude/statusline-usage-cache.json /tmp/claude/statusline-extra-cache.json \
-      /tmp/claude/statusline-extra.lock /tmp/claude/statusline-update-cache 2>/dev/null
+TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
+rm -f "$TMPDIR/claude/statusline-usage-cache.json" "$TMPDIR/claude/statusline-extra-cache.json" \
+      "$TMPDIR/claude/statusline-extra.lock" "$TMPDIR/claude/statusline-update-cache" 2>/dev/null
 
 # ── Patch settings.json ───────────────────────────────
 node -e "

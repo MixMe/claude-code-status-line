@@ -129,36 +129,43 @@ format_age() {
 
 # Shell-safe value escaper for node output
 node_parse() {
-    node -e "
-const fs=require('fs');
-const d=JSON.parse(fs.readFileSync(0,'utf8'));
-const s=fs.existsSync('$HOME/.claude/settings.json')
-  ? JSON.parse(fs.readFileSync('$HOME/.claude/settings.json','utf8'))
-  : {};
-const v=(k,val)=>{
-  if(val===undefined||val===null) val='';
-  console.log(k+'='+String(val));
-};
-v('model_name',     d.model?.display_name ?? 'Claude');
-v('ctx_size',       d.context_window?.context_window_size ?? 200000);
-v('input_tokens',   d.context_window?.current_usage?.input_tokens ?? 0);
-v('cache_create',   d.context_window?.current_usage?.cache_creation_input_tokens ?? 0);
-v('cache_read',     d.context_window?.current_usage?.cache_read_input_tokens ?? 0);
-v('ctx_pct',        d.context_window?.used_percentage ?? 0);
-v('exceeds_200k',   d.exceeds_200k_tokens ?? false);
-v('total_duration_ms', d.cost?.total_duration_ms ?? '');
-v('cwd',            d.workspace?.current_dir ?? d.cwd ?? '');
-v('five_pct',       d.rate_limits?.five_hour?.used_percentage ?? '');
-v('five_resets_epoch', d.rate_limits?.five_hour?.resets_at ?? '');
-v('seven_pct',      d.rate_limits?.seven_day?.used_percentage ?? '');
-v('seven_resets_epoch', d.rate_limits?.seven_day?.resets_at ?? '');
-v('effort',         s.effortLevel ?? 'default');
-v('thinking_setting', s.thinking ?? '');
-v('bypass_perms',   s.bypassPermissions ?? false);
-" <<< "$input"
+    echo "$input" | node -e "
+const fs=require('fs'),p=require('path');
+let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
+  try{
+    const d=JSON.parse(buf);
+    const home=process.env.HOME||process.env.USERPROFILE||'';
+    const sf=p.join(home,'.claude','settings.json');
+    let s={};
+    try{s=JSON.parse(fs.readFileSync(sf,'utf8'))}catch{}
+    const v=(k,val)=>{
+      if(val===undefined||val===null) val='';
+      console.log(k+'='+String(val));
+    };
+    v('model_name',     d.model?.display_name ?? 'Claude');
+    v('ctx_size',       d.context_window?.context_window_size ?? 200000);
+    v('input_tokens',   d.context_window?.current_usage?.input_tokens ?? 0);
+    v('cache_create',   d.context_window?.current_usage?.cache_creation_input_tokens ?? 0);
+    v('cache_read',     d.context_window?.current_usage?.cache_read_input_tokens ?? 0);
+    v('ctx_pct',        d.context_window?.used_percentage ?? 0);
+    v('exceeds_200k',   d.exceeds_200k_tokens ?? false);
+    v('total_duration_ms', d.cost?.total_duration_ms ?? '');
+    v('cwd',            d.workspace?.current_dir ?? d.cwd ?? '');
+    v('five_pct',       d.rate_limits?.five_hour?.used_percentage ?? '');
+    v('five_resets_epoch', d.rate_limits?.five_hour?.resets_at ?? '');
+    v('seven_pct',      d.rate_limits?.seven_day?.used_percentage ?? '');
+    v('seven_resets_epoch', d.rate_limits?.seven_day?.resets_at ?? '');
+    v('effort',         s.effortLevel ?? 'default');
+    v('thinking_setting', s.thinking ?? '');
+    v('bypass_perms',   s.bypassPermissions ?? false);
+  }catch(e){process.stderr.write(e.message)}
+});
+"
 }
 
-mkdir -p /tmp/claude
+TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
+CACHE_DIR="$TMPDIR/claude"
+mkdir -p "$CACHE_DIR"
 
 # ── Parse stdin + settings in one node call ──────────
 # Defaults (shellcheck SC2154: variables assigned via declare)
@@ -291,7 +298,7 @@ elif [ -f /proc/meminfo ]; then
 fi
 
 # ── Internet (cached 30s) ─────────────────────────────
-net_cache="/tmp/claude/net-cache"
+net_cache="$CACHE_DIR/net-cache"
 net_up=false
 net_needs_refresh=true
 
@@ -302,7 +309,10 @@ if [ -f "$net_cache" ]; then
 fi
 
 if $net_needs_refresh; then
-    if ping -c 1 -t 1 1.1.1.1 >/dev/null 2>&1 || ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1; then
+    # macOS: -t = timeout, Linux: -W = timeout, Windows: -n = count, -w = timeout(ms)
+    if ping -c 1 -t 1 1.1.1.1 >/dev/null 2>&1 \
+    || ping -c 1 -W 1 1.1.1.1 >/dev/null 2>&1 \
+    || ping -n 1 -w 1000 1.1.1.1 >/dev/null 2>&1; then
         net_up=true; echo "up" > "$net_cache"
     else
         echo "down" > "$net_cache"
@@ -408,18 +418,19 @@ get_oauth_token() {
         fi
     fi
 
-    local creds_file="$HOME/.claude/.credentials.json"
+    local home_dir="${HOME:-$USERPROFILE}"
+    local creds_file="$home_dir/.claude/.credentials.json"
     if [ -f "$creds_file" ]; then
         local token
-        token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$creds_file','utf8')).claudeAiOauth?.accessToken??'')}catch{console.log('')}" 2>/dev/null)
+        token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).claudeAiOauth?.accessToken??'')}catch{console.log('')}" "$creds_file" 2>/dev/null)
         [ -n "$token" ] && { echo "$token"; return 0; }
     fi
 
     echo ""
 }
 
-extra_cache="/tmp/claude/statusline-extra-cache.json"
-extra_lock="/tmp/claude/statusline-extra.lock"
+extra_cache="$CACHE_DIR/statusline-extra-cache.json"
+extra_lock="$CACHE_DIR/statusline-extra.lock"
 extra_max_age=180
 
 # Check lock file (rate-limit backoff)
@@ -460,7 +471,7 @@ if $needs_extra_refresh && ! $locked; then
                 has_extra=$(echo "$response_body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).extra_usage?'yes':'no')}catch{console.log('no')}})" 2>/dev/null)
                 if [ "$has_extra" = "yes" ]; then
                     extra_data="$response_body"
-                    tmp=$(mktemp /tmp/claude/extra-XXXXXX)
+                    tmp=$(mktemp "$CACHE_DIR/extra-XXXXXX")
                     echo "$response_body" > "$tmp" && mv "$tmp" "$extra_cache"
                     rm -f "$extra_lock" 2>/dev/null
                 fi
@@ -515,7 +526,7 @@ fi
 
 # ── Update check (cached 24h) ────────────────────────
 update_str=""
-update_cache="/tmp/claude/statusline-update-cache"
+update_cache="$CACHE_DIR/statusline-update-cache"
 update_max_age=86400
 
 update_needs_check=true
