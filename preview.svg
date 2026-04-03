@@ -20,13 +20,13 @@
   <text x="500" y="23" text-anchor="middle" class="ui" fill="#565f89">claude code — statusline preview</text>
 
   <!-- Line 1: Model │ Context │ Project │ Session │ Effort -->
-  <text x="20" y="68" xml:space="preserve" class="mono"><tspan fill="#0099ff">Claude Sonnet 4.6</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#00af50">12%</tspan><tspan fill="#565f89"> (24k/200k) cache:45% $0.08 ($0.03/1k)</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#56b6c2">my-project</tspan><tspan fill="#00af50"> (main </tspan><tspan fill="#ff5555">3~</tspan><tspan fill="#565f89"> ↑1 2h</tspan><tspan fill="#00af50">)</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">15m</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">default</tspan></text>
+  <text x="20" y="68" xml:space="preserve" class="mono"><tspan fill="#b48cff">Opus 4.6 (1M context)</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#00af50">7%</tspan><tspan fill="#565f89"> (69k/1.0m) cache:97%</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#56b6c2">my-project</tspan><tspan fill="#00af50"> (main </tspan><tspan fill="#ff5555">3~</tspan><tspan fill="#565f89"> ↑1 2h</tspan><tspan fill="#00af50">)</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">42m</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">default</tspan></text>
 
   <!-- Line 2: 5h rate limit -->
-  <text x="20" y="108" xml:space="preserve" class="mono"><tspan fill="#dcdcdc">5h  </tspan><tspan fill="#00af50">●●</tspan><tspan fill="#2a2f45">○○○○○○○○</tspan><tspan fill="#00af50">  22%</tspan><tspan fill="#565f89">  (3h 42m) → </tspan><tspan fill="#dcdcdc">6:30pm</tspan></text>
+  <text x="20" y="108" xml:space="preserve" class="mono"><tspan fill="#dcdcdc">5h</tspan><tspan fill="#dcdcdc">  </tspan><tspan fill="#ffb055">●●●●●</tspan><tspan fill="#2a2f45">○○○○○</tspan><tspan fill="#ffb055">  52%</tspan><tspan fill="#565f89"> -&gt; </tspan><tspan fill="#dcdcdc">7:00pm</tspan><tspan fill="#565f89"> (2h 14m)</tspan></text>
 
   <!-- Line 3: 7d rate limit -->
-  <text x="20" y="130" xml:space="preserve" class="mono"><tspan fill="#dcdcdc">7d  </tspan><tspan fill="#00af50">●●●●</tspan><tspan fill="#2a2f45">○○○○○○</tspan><tspan fill="#00af50">  41%</tspan><tspan fill="#565f89">  (2d 14h) → </tspan><tspan fill="#dcdcdc">apr 9, 6:30pm</tspan></text>
+  <text x="20" y="130" xml:space="preserve" class="mono"><tspan fill="#dcdcdc">7d</tspan><tspan fill="#dcdcdc">  </tspan><tspan fill="#00af50">●●</tspan><tspan fill="#2a2f45">○○○○○○○○</tspan><tspan fill="#00af50">  19%</tspan><tspan fill="#565f89"> -&gt; </tspan><tspan fill="#dcdcdc">apr 9, 2:00pm</tspan><tspan fill="#565f89"> (5d 22h)</tspan></text>
 
   <!-- Line 4: System info -->
   <text x="20" y="170" xml:space="preserve" class="mono"><tspan fill="#565f89">bat 87%</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">mem 6.2gb free</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">net </tspan><tspan fill="#00af50">●</tspan><tspan fill="#3b4261"> │ </tspan><tspan fill="#565f89">2:34pm</tspan></text>

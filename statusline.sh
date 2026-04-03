@@ -1,6 +1,10 @@
 #!/bin/bash
 set -f
 
+# claude-code-statusline v1.1.0
+VERSION="1.1.0"
+REPO="anthropics-user/claude-code-statusline"  # TODO: update with real repo
+
 input=$(cat)
 
 if [ -z "$input" ]; then
@@ -61,39 +65,11 @@ build_bar() {
     printf "${bar_color}${filled_str}${dim}${empty_str}${reset}"
 }
 
-iso_to_epoch() {
-    local iso_str="$1"
-    local epoch
-
-    # GNU date (Linux)
-    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
-    [ -n "$epoch" ] && { echo "$epoch"; return 0; }
-
-    # BSD date (macOS)
-    local stripped="${iso_str%%.*}"
-    local is_utc=false
-    [[ "$iso_str" == *Z* ]] || [[ "$iso_str" == *+00:00* ]] && is_utc=true
-    stripped="${stripped%%Z}"
-    stripped="${stripped%%+*}"
-    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"
-    if $is_utc; then
-        epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    else
-        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
-    fi
-    [ -n "$epoch" ] && { echo "$epoch"; return 0; }
-
-    return 1
-}
-
-format_reset_time() {
-    local iso_str="$1"
-    local style="${2:-date}"
-    [ -z "$iso_str" ] || [ "$iso_str" = "null" ] && return
-
-    local epoch
-    epoch=$(iso_to_epoch "$iso_str")
-    [ -z "$epoch" ] && return
+# Format unix epoch to human-readable time
+format_epoch_as_time() {
+    local epoch="$1"
+    local style="${2:-time}"
+    [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
 
     local result=""
     case "$style" in
@@ -105,7 +81,7 @@ format_reset_time() {
             result=$(date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
             [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g')
             ;;
-        *)
+        date)
             result=$(date -j -r "$epoch" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
             [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d" 2>/dev/null)
             ;;
@@ -113,13 +89,10 @@ format_reset_time() {
     printf "%s" "$result"
 }
 
-format_time_left() {
-    local iso_str="$1"
-    [ -z "$iso_str" ] || [ "$iso_str" = "null" ] && return
-
-    local epoch
-    epoch=$(iso_to_epoch "$iso_str")
-    [ -z "$epoch" ] && return
+# Format time remaining until epoch
+format_epoch_time_left() {
+    local epoch="$1"
+    [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
 
     local now_epoch remaining
     now_epoch=$(date +%s)
@@ -137,6 +110,30 @@ format_time_left() {
     else
         printf "%dm" $(( remaining / 60 ))
     fi
+}
+
+# ISO to epoch (for session start time etc.)
+iso_to_epoch() {
+    local iso_str="$1"
+    local epoch
+
+    epoch=$(date -d "${iso_str}" +%s 2>/dev/null)
+    [ -n "$epoch" ] && { echo "$epoch"; return 0; }
+
+    local stripped="${iso_str%%.*}"
+    local is_utc=false
+    [[ "$iso_str" == *Z* ]] || [[ "$iso_str" == *+00:00* ]] && is_utc=true
+    stripped="${stripped%%Z}"
+    stripped="${stripped%%+*}"
+    stripped="${stripped%%-[0-9][0-9]:[0-9][0-9]}"
+    if $is_utc; then
+        epoch=$(TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    else
+        epoch=$(date -j -f "%Y-%m-%dT%H:%M:%S" "$stripped" +%s 2>/dev/null)
+    fi
+    [ -n "$epoch" ] && { echo "$epoch"; return 0; }
+
+    return 1
 }
 
 format_age() {
@@ -172,10 +169,9 @@ ctx_used=$(( input_tokens + cache_create + cache_read ))
 used_fmt=$(format_tokens "$ctx_used")
 total_fmt=$(format_tokens "$ctx_size")
 
-ctx_pct=0
-[ "$ctx_size" -gt 0 ] && ctx_pct=$(( ctx_used * 100 / ctx_size ))
+ctx_pct=$(echo "$input" | jq -r '.context_window.used_percentage // 0')
+[ "$ctx_pct" = "null" ] && ctx_pct=0
 
-raw_cost=$(echo "$input" | jq -r '.cost_usd // empty')
 msg_count=$(echo "$input" | jq -r 'if .messages then (.messages | length) else empty end' 2>/dev/null)
 
 # ── Model tier color ──────────────────────────────────
@@ -193,31 +189,24 @@ if [ "$ctx_used" -gt 0 ]; then
     cache_hit_str="${dim}cache:${cache_hit_pct}%${reset}"
 fi
 
-# ── Session cost + cost per 1k tokens ────────────────
-session_cost=""
-cost_per_k=""
-if [ -n "$raw_cost" ] && [ "$raw_cost" != "null" ]; then
-    session_cost=$(awk "BEGIN {printf \"\$%.2f\", $raw_cost}")
-    if [ "$ctx_used" -gt 1000 ]; then
-        cost_per_k=$(awk "BEGIN {printf \"\$%.3f/1k\", $raw_cost / $ctx_used * 1000}")
-    fi
+# ── Context overflow warning ─────────────────────────
+exceeds_200k=$(echo "$input" | jq -r '.exceeds_200k_tokens // false')
+ctx_warning=""
+if [ "$exceeds_200k" = "true" ]; then
+    ctx_warning="${red}long chat${reset}"
 fi
 
-# ── Session duration ──────────────────────────────────
+# ── Session duration (from stdin cost.total_duration_ms) ─
 session_duration=""
-session_start=$(echo "$input" | jq -r '.session.start_time // empty')
-if [ -n "$session_start" ] && [ "$session_start" != "null" ]; then
-    start_epoch=$(iso_to_epoch "$session_start")
-    if [ -n "$start_epoch" ]; then
-        now_epoch=$(date +%s)
-        elapsed=$(( now_epoch - start_epoch ))
-        if [ "$elapsed" -ge 3600 ]; then
-            session_duration="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"
-        elif [ "$elapsed" -ge 60 ]; then
-            session_duration="$(( elapsed / 60 ))m"
-        else
-            session_duration="${elapsed}s"
-        fi
+total_duration_ms=$(echo "$input" | jq -r '.cost.total_duration_ms // empty')
+if [ -n "$total_duration_ms" ] && [ "$total_duration_ms" != "null" ]; then
+    elapsed=$(( total_duration_ms / 1000 ))
+    if [ "$elapsed" -ge 3600 ]; then
+        session_duration="$(( elapsed / 3600 ))h$(( (elapsed % 3600) / 60 ))m"
+    elif [ "$elapsed" -ge 60 ]; then
+        session_duration="$(( elapsed / 60 ))m"
+    else
+        session_duration="${elapsed}s"
     fi
 fi
 
@@ -234,12 +223,11 @@ if [ -f "$settings_path" ]; then
     bp=$(jq -r '.bypassPermissions // false' "$settings_path" 2>/dev/null)
     [ "$bp" = "true" ] && bypass_perms=true
 fi
-# also check JSON input for thinking
 t2=$(echo "$input" | jq -r '.thinking.enabled // empty' 2>/dev/null)
 [ "$t2" = "true" ] && thinking_on=true
 
 # ── Working directory & git ───────────────────────────
-cwd=$(echo "$input" | jq -r '.cwd // ""')
+cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // ""')
 [ -z "$cwd" ] || [ "$cwd" = "null" ] && cwd=$(pwd)
 dirname=$(basename "$cwd")
 
@@ -268,11 +256,9 @@ fi
 battery_str=""
 batt_pct=""
 
-# macOS
 batt_raw=$(pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1)
 [ -n "$batt_raw" ] && batt_pct="${batt_raw%\%}"
 
-# Linux fallback
 if [ -z "$batt_pct" ]; then
     for bat in /sys/class/power_supply/BAT{0,1,2}; do
         [ -f "$bat/capacity" ] && batt_pct=$(cat "$bat/capacity") && break
@@ -361,10 +347,7 @@ line1="${model_color}${model_name}${reset}"
 line1+="${sep}"
 line1+="${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
 [ -n "$cache_hit_str" ] && line1+=" ${cache_hit_str}"
-if [ -n "$session_cost" ]; then
-    line1+=" ${dim}${session_cost}${reset}"
-    [ -n "$cost_per_k" ] && line1+=" ${dim}(${cost_per_k})${reset}"
-fi
+[ -n "$ctx_warning" ] && line1+=" ${ctx_warning}"
 line1+="${sep}"
 line1+="${cyan}${dirname}${reset}"
 if [ -n "$git_branch" ]; then
@@ -390,7 +373,49 @@ esac
 $thinking_on  && line1+=" ${cyan}thinking${reset}"
 $bypass_perms && line1+=" ${red}!perms${reset}"
 
-# ── OAuth token ───────────────────────────────────────
+# ── Rate limits: stdin-first (zero API calls) ────────
+# Claude Code v2.1.80+ provides rate_limits in stdin JSON.
+# This is always fresh, free, and doesn't hit any API.
+five_pct=$(echo "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty')
+five_resets_epoch=$(echo "$input" | jq -r '.rate_limits.five_hour.resets_at // empty')
+seven_pct=$(echo "$input" | jq -r '.rate_limits.seven_day.used_percentage // empty')
+seven_resets_epoch=$(echo "$input" | jq -r '.rate_limits.seven_day.resets_at // empty')
+
+rate_lines=""
+bar_width=10
+
+if [ -n "$five_pct" ] && [ "$five_pct" != "null" ]; then
+    five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
+    five_reset=$(format_epoch_as_time "$five_resets_epoch" time)
+    five_left=$(format_epoch_time_left "$five_resets_epoch")
+    five_bar=$(build_bar "$five_pct_int" "$bar_width")
+    five_color=$(color_for_pct "$five_pct_int")
+
+    rate_lines+="${white}5h${reset}  ${five_bar} ${five_color}$(printf "%3d" "$five_pct_int")%${reset}"
+    if [ -n "$five_reset" ]; then
+        rate_lines+=" ${dim}-> ${reset}${white}${five_reset}${reset}"
+        [ -n "$five_left" ] && rate_lines+=" ${dim}(${five_left})${reset}"
+    fi
+fi
+
+if [ -n "$seven_pct" ] && [ "$seven_pct" != "null" ]; then
+    seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
+    seven_reset=$(format_epoch_as_time "$seven_resets_epoch" datetime)
+    seven_left=$(format_epoch_time_left "$seven_resets_epoch")
+    seven_bar=$(build_bar "$seven_pct_int" "$bar_width")
+    seven_color=$(color_for_pct "$seven_pct_int")
+
+    [ -n "$rate_lines" ] && rate_lines+="\n"
+    rate_lines+="${white}7d${reset}  ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct_int")%${reset}"
+    if [ -n "$seven_reset" ]; then
+        rate_lines+=" ${dim}-> ${reset}${white}${seven_reset}${reset}"
+        [ -n "$seven_left" ] && rate_lines+=" ${dim}(${seven_left})${reset}"
+    fi
+fi
+
+# ── Extra usage: API with rate-limit backoff (cached 180s) ─
+# extra_usage is NOT in stdin, so we still need the API for it.
+# But we cache aggressively and respect 429 backoff.
 get_oauth_token() {
     [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && { echo "$CLAUDE_CODE_OAUTH_TOKEN"; return 0; }
 
@@ -414,83 +439,134 @@ get_oauth_token() {
     echo ""
 }
 
-# ── Usage API (cached 60s) ────────────────────────────
-cache_file="/tmp/claude/statusline-usage-cache.json"
-cache_max_age=60
-needs_refresh=true
-usage_data=""
+extra_cache="/tmp/claude/statusline-extra-cache.json"
+extra_lock="/tmp/claude/statusline-extra.lock"
+extra_max_age=180   # 3 min cache
+extra_data=""
 
-if [ -f "$cache_file" ]; then
-    cache_mtime=$(stat -f %m "$cache_file" 2>/dev/null || stat -c %Y "$cache_file" 2>/dev/null)
-    cache_age=$(( $(date +%s) - cache_mtime ))
-    [ "$cache_age" -lt "$cache_max_age" ] && needs_refresh=false && usage_data=$(cat "$cache_file" 2>/dev/null)
+# Check lock file (rate-limit backoff)
+locked=false
+if [ -f "$extra_lock" ]; then
+    lock_mtime=$(stat -f %m "$extra_lock" 2>/dev/null || stat -c %Y "$extra_lock" 2>/dev/null)
+    lock_age=$(( $(date +%s) - lock_mtime ))
+    blocked_for=$(cat "$extra_lock" 2>/dev/null || echo "300")
+    [ "$lock_age" -lt "$blocked_for" ] && locked=true
 fi
 
-if $needs_refresh; then
+needs_extra_refresh=true
+if [ -f "$extra_cache" ]; then
+    extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+    extra_age=$(( $(date +%s) - extra_mtime ))
+    if [ "$extra_age" -lt "$extra_max_age" ]; then
+        needs_extra_refresh=false
+        extra_data=$(cat "$extra_cache" 2>/dev/null)
+    fi
+fi
+
+if $needs_extra_refresh && ! $locked; then
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
-        response=$(curl -s --max-time 5 \
+        http_response=$(curl -s -w "\n__HTTP_CODE__%{http_code}" --max-time 5 \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $token" \
             -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
-        if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
-            usage_data="$response"
-            echo "$response" > "$cache_file"
+
+        http_code=$(echo "$http_response" | tail -1 | sed 's/__HTTP_CODE__//')
+        response_body=$(echo "$http_response" | sed '$d')
+
+        case "$http_code" in
+            200)
+                if echo "$response_body" | jq -e '.extra_usage' >/dev/null 2>&1; then
+                    extra_data="$response_body"
+                    # Atomic write: temp file + rename
+                    tmp=$(mktemp /tmp/claude/extra-XXXXXX)
+                    echo "$response_body" > "$tmp" && mv "$tmp" "$extra_cache"
+                    rm -f "$extra_lock" 2>/dev/null
+                fi
+                ;;
+            429)
+                # Rate limited — back off for 300s
+                echo "300" > "$extra_lock"
+                ;;
+            401|403)
+                # Auth error — back off for 600s
+                echo "600" > "$extra_lock"
+                ;;
+            *)
+                # Other error — back off for 60s
+                echo "60" > "$extra_lock"
+                ;;
+        esac
+    fi
+    # Stale fallback: use old cache if fresh fetch failed, but max 10 min
+    if [ -z "$extra_data" ] && [ -f "$extra_cache" ]; then
+        extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+        extra_age=$(( $(date +%s) - extra_mtime ))
+        if [ "$extra_age" -lt 600 ]; then
+            extra_data=$(cat "$extra_cache" 2>/dev/null)
         fi
     fi
-    [ -z "$usage_data" ] && [ -f "$cache_file" ] && usage_data=$(cat "$cache_file" 2>/dev/null)
 fi
 
-# ── Build line 2: Rate limits ─────────────────────────
-rate_lines=""
-
-if [ -n "$usage_data" ] && echo "$usage_data" | jq -e . >/dev/null 2>&1; then
-    bar_width=10
-
-    five_resets_at=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
-    five_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
-    five_reset=$(format_reset_time "$five_resets_at" time)
-    five_left=$(format_time_left "$five_resets_at")
-    five_bar=$(build_bar "$five_pct" "$bar_width")
-    five_color=$(color_for_pct "$five_pct")
-
-    rate_lines+="${white}5h${reset}  ${five_bar} ${five_color}$(printf "%3d" "$five_pct")%${reset}"
-    if [ -n "$five_left" ] && [ -n "$five_reset" ]; then
-        rate_lines+=" ${dim}(${five_left})${reset} ${dim}→ ${reset}${white}${five_reset}${reset}"
-    elif [ -n "$five_reset" ]; then
-        rate_lines+=" ${dim}→ ${reset}${white}${five_reset}${reset}"
-    fi
-
-    seven_resets_at=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
-    seven_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
-    seven_reset=$(format_reset_time "$seven_resets_at" datetime)
-    seven_left=$(format_time_left "$seven_resets_at")
-    seven_bar=$(build_bar "$seven_pct" "$bar_width")
-    seven_color=$(color_for_pct "$seven_pct")
-
-    rate_lines+="\n${white}7d${reset}  ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct")%${reset}"
-    if [ -n "$seven_left" ] && [ -n "$seven_reset" ]; then
-        rate_lines+=" ${dim}(${seven_left})${reset} ${dim}→ ${reset}${white}${seven_reset}${reset}"
-    elif [ -n "$seven_reset" ]; then
-        rate_lines+=" ${dim}→ ${reset}${white}${seven_reset}${reset}"
-    fi
-
-    extra_enabled=$(echo "$usage_data" | jq -r '.extra_usage.is_enabled // false')
+# Append extra_usage to rate_lines if available
+if [ -n "$extra_data" ]; then
+    extra_enabled=$(echo "$extra_data" | jq -r '.extra_usage.is_enabled // false')
     if [ "$extra_enabled" = "true" ]; then
-        extra_pct=$(echo "$usage_data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
-        extra_used=$(echo "$usage_data" | jq -r '.extra_usage.used_credits // 0' | awk '{printf "%.2f", $1/100}')
-        extra_limit=$(echo "$usage_data" | jq -r '.extra_usage.monthly_limit // 0' | awk '{printf "%.2f", $1/100}')
+        extra_pct=$(echo "$extra_data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
+        extra_used=$(echo "$extra_data" | jq -r '.extra_usage.used_credits // 0' | awk '{printf "%.2f", $1/100}')
+        extra_limit=$(echo "$extra_data" | jq -r '.extra_usage.monthly_limit // 0' | awk '{printf "%.2f", $1/100}')
         extra_bar=$(build_bar "$extra_pct" "$bar_width")
         extra_color=$(color_for_pct "$extra_pct")
 
         extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
         [ -z "$extra_reset" ] && extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
 
-        rate_lines+="\n${white}extra${reset}  ${extra_bar} ${extra_color}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
-        [ -n "$extra_reset" ] && rate_lines+=" ${dim}→ ${reset}${white}${extra_reset}${reset}"
+        [ -n "$rate_lines" ] && rate_lines+="\n"
+        rate_lines+="${white}extra${reset}  ${extra_bar} ${extra_color}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
+        [ -n "$extra_reset" ] && rate_lines+=" ${dim}-> ${reset}${white}${extra_reset}${reset}"
+
+        # Staleness indicator for API-fetched data
+        if [ -f "$extra_cache" ]; then
+            extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+            extra_age=$(( $(date +%s) - extra_mtime ))
+            if [ "$extra_age" -gt "$extra_max_age" ]; then
+                stale_age=$(format_age "$extra_mtime")
+                rate_lines+=" ${dim}(${stale_age} ago)${reset}"
+            fi
+        fi
+    fi
+fi
+
+# ── Update check (cached 24h) ────────────────────────
+update_str=""
+update_cache="/tmp/claude/statusline-update-cache"
+update_max_age=86400  # 24 hours
+
+update_needs_check=true
+if [ -f "$update_cache" ]; then
+    update_mtime=$(stat -f %m "$update_cache" 2>/dev/null || stat -c %Y "$update_cache" 2>/dev/null)
+    update_age=$(( $(date +%s) - update_mtime ))
+    [ "$update_age" -lt "$update_max_age" ] && update_needs_check=false
+fi
+
+if $update_needs_check; then
+    # Fetch latest version tag from GitHub (non-blocking, 3s timeout)
+    latest_tag=$(curl -s --max-time 3 \
+        "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
+        | jq -r '.tag_name // empty' 2>/dev/null)
+    if [ -n "$latest_tag" ]; then
+        latest_ver="${latest_tag#v}"
+        echo "$latest_ver" > "$update_cache"
+    fi
+fi
+
+if [ -f "$update_cache" ]; then
+    latest_ver=$(cat "$update_cache" 2>/dev/null)
+    if [ -n "$latest_ver" ] && [ "$latest_ver" != "$VERSION" ]; then
+        # Simple version comparison: if they differ, assume update available
+        update_str="${yellow}update ${latest_ver}${reset}"
     fi
 fi
 
@@ -500,6 +576,7 @@ sys_parts=()
 [ -n "$mem_str" ]     && sys_parts+=("$mem_str")
 [ -n "$net_str" ]     && sys_parts+=("$net_str")
 [ -n "$local_time" ]  && sys_parts+=("${dim}${local_time}${reset}")
+[ -n "$update_str" ]  && sys_parts+=("$update_str")
 
 sys_line=""
 for part in "${sys_parts[@]}"; do
