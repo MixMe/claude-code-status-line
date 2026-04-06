@@ -12,6 +12,15 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
+# mtime helper: GNU stat uses `-c %Y`, BSD stat uses `-f %m`. We must NOT
+# fall back blindly — on Linux, `stat -f` means "display file system status"
+# and succeeds with verbose stdout, corrupting arithmetic later. Detect once.
+if stat -c %Y / >/dev/null 2>&1; then
+    _mtime() { stat -c %Y "$1" 2>/dev/null; }
+else
+    _mtime() { stat -f %m "$1" 2>/dev/null; }
+fi
+
 # claude-code-statusline v1.3.0
 VERSION="1.3.0"
 REPO="MixMe/claude-code-status-line"
@@ -81,21 +90,33 @@ format_epoch_as_time() {
     local style="${2:-time}"
     [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
 
+    # Honor global time_format (12h|24h); default 12h if unset.
+    local tf="${time_format:-12h}"
+    local time_fmt date_fmt
+    if [ "$tf" = "24h" ]; then
+        time_fmt="%H:%M"
+    else
+        time_fmt="%l:%M%p"
+    fi
+    date_fmt="%b %-d"
+
     local result=""
     case "$style" in
         time)
-            result=$(date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //; s/\.//g')
+            result=$(date -j -r "$epoch" +"$time_fmt" 2>/dev/null)
+            [ -z "$result" ] && result=$(date -d "@$epoch" +"$time_fmt" 2>/dev/null)
             ;;
         datetime)
-            result=$(date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g')
+            result=$(date -j -r "$epoch" +"${date_fmt}, ${time_fmt}" 2>/dev/null)
+            [ -z "$result" ] && result=$(date -d "@$epoch" +"${date_fmt}, ${time_fmt}" 2>/dev/null)
             ;;
         date)
-            result=$(date -j -r "$epoch" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d" 2>/dev/null)
+            result=$(date -j -r "$epoch" +"$date_fmt" 2>/dev/null)
+            [ -z "$result" ] && result=$(date -d "@$epoch" +"$date_fmt" 2>/dev/null)
             ;;
     esac
+    # Normalize: trim leading space from %l, drop stray dots, lowercase (for am/pm + month abbrev).
+    result=$(printf '%s' "$result" | sed 's/  / /g; s/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
     printf "%s" "$result"
 }
 
@@ -191,6 +212,32 @@ done < <(node_parse)
 
 [ "$ctx_size" = "0" ] && ctx_size=200000
 
+# Rate limits are absent from stdin until Claude Code processes the first
+# message of a session. Persist the last-seen values to disk and fall back
+# to them on fresh starts so 5h/7d stay visible immediately.
+rate_cache="$CACHE_DIR/rate-limits"
+if [ -n "$five_pct" ] || [ -n "$seven_pct" ]; then
+    {
+        echo "five_pct=$five_pct"
+        echo "five_resets_epoch=$five_resets_epoch"
+        echo "seven_pct=$seven_pct"
+        echo "seven_resets_epoch=$seven_resets_epoch"
+    } > "$rate_cache" 2>/dev/null
+elif [ -f "$rate_cache" ]; then
+    while IFS='=' read -r key val; do
+        declare "$key=$val"
+    done < "$rate_cache"
+    # Drop entries whose reset window has already elapsed — the cached
+    # percentage no longer reflects reality once the window rolled over.
+    now_epoch=$(date +%s)
+    if [ -n "$five_resets_epoch" ] && [ "$five_resets_epoch" -le "$now_epoch" ] 2>/dev/null; then
+        five_pct=""; five_resets_epoch=""
+    fi
+    if [ -n "$seven_resets_epoch" ] && [ "$seven_resets_epoch" -le "$now_epoch" ] 2>/dev/null; then
+        seven_pct=""; seven_resets_epoch=""
+    fi
+fi
+
 ctx_used=$(( input_tokens + cache_create + cache_read ))
 used_fmt=$(format_tokens "$ctx_used")
 total_fmt=$(format_tokens "$ctx_size")
@@ -202,62 +249,6 @@ case "$model_name" in
     *Sonnet*) model_color="$blue" ;;
     *Opus*)  model_color="$magenta" ;;
 esac
-
-# ── Cache hit rate ────────────────────────────────────
-cache_hit_str=""
-if [ "$ctx_used" -gt 0 ]; then
-    cache_hit_pct=$(( cache_read * 100 / ctx_used ))
-    cache_hit_str="${dim}cache:${cache_hit_pct}%${reset}"
-fi
-
-# ── Context overflow warning ─────────────────────────
-ctx_warning=""
-[ "$exceeds_200k" = "true" ] && ctx_warning="${red}long chat${reset}"
-
-# ── Session duration ─────────────────────────────────
-session_duration=""
-if [ -n "$total_duration_ms" ]; then
-    elapsed=$(( total_duration_ms / 1000 ))
-    if [ "$elapsed" -ge 3600 ]; then
-        session_duration="$(( elapsed / 3600 ))h $(( (elapsed % 3600) / 60 ))m"
-    elif [ "$elapsed" -ge 60 ]; then
-        session_duration="$(( elapsed / 60 ))m"
-    else
-        session_duration="${elapsed}s"
-    fi
-fi
-
-# ── Effort + thinking + permissions ──────────────────
-thinking_on=false
-[ "$thinking_setting" = "true" ] || [ "$thinking_setting" = "enabled" ] && thinking_on=true
-
-bypass_perms_on=false
-[ "$bypass_perms" = "true" ] && bypass_perms_on=true
-
-# ── Working directory & git ───────────────────────────
-[ -z "$cwd" ] && cwd=$(pwd)
-dirname=$(basename "$cwd")
-
-git_branch=""
-git_dirty_count=0
-git_ahead=0
-git_behind=0
-git_commit_age=""
-
-if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-
-    git_dirty_count=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-
-    ab=$(git -C "$cwd" rev-list --count --left-right "@{upstream}...HEAD" 2>/dev/null)
-    if [ -n "$ab" ]; then
-        git_behind=$(echo "$ab" | awk '{print $1}')
-        git_ahead=$(echo "$ab" | awk '{print $2}')
-    fi
-
-    commit_ts=$(git -C "$cwd" log -1 --format="%ct" 2>/dev/null)
-    [ -n "$commit_ts" ] && git_commit_age=$(format_age "$commit_ts")
-fi
 
 # ── Battery ───────────────────────────────────────────
 battery_str=""
@@ -274,11 +265,11 @@ fi
 
 if [ -n "$batt_pct" ]; then
     if [ "$batt_pct" -le 20 ]; then
-        battery_str="${red}battery ${batt_pct}%${reset}"
+        battery_str="${red}bat ${batt_pct}%${reset}"
     elif [ "$batt_pct" -le 40 ]; then
-        battery_str="${yellow}battery ${batt_pct}%${reset}"
+        battery_str="${yellow}bat ${batt_pct}%${reset}"
     else
-        battery_str="${dim}battery ${batt_pct}%${reset}"
+        battery_str="${dim}bat ${batt_pct}%${reset}"
     fi
 fi
 
@@ -292,18 +283,18 @@ if command -v vm_stat >/dev/null 2>&1; then
     if [ -n "$free_p" ] && [ -n "$inactive_p" ]; then
         free_mb=$(( (free_p + inactive_p) * page_size / 1024 / 1024 ))
         if [ "$free_mb" -ge 1024 ]; then
-            mem_str="${dim}memory $(awk "BEGIN {printf \"%.1fGB\", $free_mb/1024}") free${reset}"
+            mem_str="${dim}mem $(awk "BEGIN {printf \"%.1fgb\", $free_mb/1024}") free${reset}"
         else
-            mem_str="${dim}memory ${free_mb}MB free${reset}"
+            mem_str="${dim}mem ${free_mb}mb free${reset}"
         fi
     fi
 elif [ -f /proc/meminfo ]; then
     avail_kb=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
     if [ -n "$avail_kb" ]; then
         if [ "$avail_kb" -ge 1048576 ]; then
-            mem_str="${dim}memory $(awk "BEGIN {printf \"%.1fGB\", $avail_kb/1048576}") free${reset}"
+            mem_str="${dim}mem $(awk "BEGIN {printf \"%.1fgb\", $avail_kb/1048576}") free${reset}"
         else
-            mem_str="${dim}memory $(awk "BEGIN {printf \"%.0fMB\", $avail_kb/1024}") free${reset}"
+            mem_str="${dim}mem $(awk "BEGIN {printf \"%.0fmb\", $avail_kb/1024}") free${reset}"
         fi
     fi
 fi
@@ -314,7 +305,7 @@ net_up=false
 net_needs_refresh=true
 
 if [ -f "$net_cache" ]; then
-    net_mtime=$(stat -f %m "$net_cache" 2>/dev/null || stat -c %Y "$net_cache" 2>/dev/null)
+    net_mtime=$(_mtime "$net_cache")
     net_age=$(( $(date +%s) - net_mtime ))
     [ "$net_age" -lt 30 ] && net_needs_refresh=false && [ "$(cat "$net_cache")" = "up" ] && net_up=true
 fi
@@ -331,17 +322,20 @@ if $net_needs_refresh; then
 fi
 
 if $net_up; then
-    net_str="${dim}network ${green}●${reset}"
+    net_str="${dim}net ${green}●${reset}"
 else
-    net_str="${dim}network ${red}○${reset}"
+    net_str="${dim}net ${red}○${reset}"
 fi
 
-# ── Local time ────────────────────────────────────────
+# ── Local time & mode ────────────────────────────────
 time_format="12h"
+mode="compact"
 config_file="$HOME/.config/claude-statusline/config"
 [ -f "$config_file" ] && {
     fmt=$(grep '^TIME_FORMAT=' "$config_file" 2>/dev/null | cut -d= -f2)
     [ -n "$fmt" ] && time_format="$fmt"
+    m=$(grep '^MODE=' "$config_file" 2>/dev/null | cut -d= -f2)
+    [ -n "$m" ] && mode="$m"
 }
 
 if [ "$time_format" = "24h" ]; then
@@ -350,37 +344,134 @@ else
     local_time=$(date +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
 fi
 
+# ── Full-mode extras (cache hit, ctx warning, session, effort, git) ──
+cache_hit_str=""
+ctx_warning=""
+session_duration=""
+thinking_on=false
+bypass_perms_on=false
+dirname=""
+git_branch=""
+git_dirty_count=0
+git_ahead=0
+git_behind=0
+git_commit_age=""
+
+# Workspace + basic git info are used by both compact and flex modes.
+[ -z "$cwd" ] && cwd=$(pwd)
+dirname=$(basename "$cwd")
+if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
+    git_dirty_count=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+fi
+
+if [ "$mode" = "flex" ]; then
+    if [ "$ctx_used" -gt 0 ]; then
+        cache_hit_pct=$(( cache_read * 100 / ctx_used ))
+        cache_hit_str="${dim}cache:${cache_hit_pct}%${reset}"
+    fi
+
+    [ "$exceeds_200k" = "true" ] && ctx_warning="${red}long chat${reset}"
+
+    if [ -n "$total_duration_ms" ]; then
+        elapsed=$(( total_duration_ms / 1000 ))
+        if [ "$elapsed" -ge 3600 ]; then
+            session_duration="$(( elapsed / 3600 ))h $(( (elapsed % 3600) / 60 ))m"
+        elif [ "$elapsed" -ge 60 ]; then
+            session_duration="$(( elapsed / 60 ))m"
+        else
+            session_duration="${elapsed}s"
+        fi
+    fi
+
+    [ "$thinking_setting" = "true" ] || [ "$thinking_setting" = "enabled" ] && thinking_on=true
+    [ "$bypass_perms" = "true" ] && bypass_perms_on=true
+
+    # Flex-only git extras: ahead/behind sync + last commit age.
+    if [ -n "$git_branch" ]; then
+        ab=$(git -C "$cwd" rev-list --count --left-right "@{upstream}...HEAD" 2>/dev/null)
+        if [ -n "$ab" ]; then
+            git_behind=$(echo "$ab" | awk '{print $1}')
+            git_ahead=$(echo "$ab" | awk '{print $2}')
+        fi
+        commit_ts=$(git -C "$cwd" log -1 --format="%ct" 2>/dev/null)
+        [ -n "$commit_ts" ] && git_commit_age=$(format_age "$commit_ts")
+    fi
+fi
+
 # ── Build line 1 ─────────────────────────────────────
 ctx_color=$(color_for_pct "$ctx_pct")
 
-line1="${model_color}${model_name}${reset}"
-line1+="${sep}"
-line1+="${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
-[ -n "$cache_hit_str" ] && line1+=" ${cache_hit_str}"
-[ -n "$ctx_warning" ] && line1+=" ${ctx_warning}"
-line1+="${sep}"
-line1+="${cyan}${dirname}${reset}"
-if [ -n "$git_branch" ]; then
-    git_info="${git_branch}"
-    [ "$git_dirty_count" -gt 0 ] && git_info+=" ${red}${git_dirty_count}~${reset}${green}"
-    sync_str=""
-    [ "$git_ahead" -gt 0 ] && sync_str+="↑${git_ahead}"
-    [ "$git_behind" -gt 0 ] && sync_str+="↓${git_behind}"
-    [ -n "$sync_str" ] && git_info+=" ${dim}${sync_str}${reset}${green}"
-    [ -n "$git_commit_age" ] && git_info+=" ${dim}${git_commit_age}${reset}${green}"
-    line1+=" ${green}(${git_info})${reset}"
+if $net_up; then
+    net_dot="${green}●${reset}"
+else
+    net_dot="${red}●${reset}"
 fi
-if [ -n "$session_duration" ]; then
-    line1+="${sep}${dim}${session_duration}${reset}"
+
+line1=""
+if [ "$mode" = "flex" ]; then
+    line1="${model_color}${model_name}${reset}"
+    line1+="${sep}"
+    line1+="${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
+    [ -n "$cache_hit_str" ] && line1+=" ${cache_hit_str}"
+    [ -n "$ctx_warning" ] && line1+=" ${ctx_warning}"
+    line1+="${sep}"
+    line1+="${cyan}${dirname}${reset}"
+    if [ -n "$git_branch" ]; then
+        git_info="${git_branch}"
+        [ "$git_dirty_count" -gt 0 ] && git_info+=" ${red}${git_dirty_count}~${reset}${green}"
+        sync_str=""
+        [ "$git_ahead" -gt 0 ] && sync_str+="↑${git_ahead}"
+        [ "$git_behind" -gt 0 ] && sync_str+="↓${git_behind}"
+        [ -n "$sync_str" ] && git_info+=" ${dim}${sync_str}${reset}${green}"
+        [ -n "$git_commit_age" ] && git_info+=" ${dim}${git_commit_age}${reset}${green}"
+        line1+=" ${green}(${git_info})${reset}"
+    fi
+    if [ -n "$session_duration" ]; then
+        line1+="${sep}${dim}${session_duration}${reset}"
+    fi
+    line1+="${sep}"
+    case "$effort" in
+        high) line1+="${magenta}high${reset}" ;;
+        low)  line1+="${dim}low${reset}" ;;
+        *)    line1+="${dim}${effort}${reset}" ;;
+    esac
+    $thinking_on    && line1+=" ${cyan}thinking${reset}"
+    $bypass_perms_on && line1+=" ${red}!permissions${reset}"
+else
+    [ -n "$local_time" ] && line1+="${dim}${local_time}${reset}${sep}"
+    line1+="${net_dot}"
+    line1+="${sep}${model_color}${model_name}${reset}"
+    line1+="${sep}${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
+
+    # 5-hour segment
+    if [ -n "$five_pct" ]; then
+        five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
+        five_reset=$(format_epoch_as_time "$five_resets_epoch" time)
+        five_color=$(color_for_pct "$five_pct_int")
+        line1+="${sep}${white}5h${reset} ${five_color}${five_pct_int}%${reset}"
+        [ -n "$five_reset" ] && line1+=" ${dim}${five_reset}${reset}"
+    fi
+
+    # 7-day segment
+    if [ -n "$seven_pct" ]; then
+        seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
+        seven_reset=$(format_epoch_as_time "$seven_resets_epoch" date)
+        seven_left=$(format_epoch_time_left "$seven_resets_epoch")
+        seven_color=$(color_for_pct "$seven_pct_int")
+        line1+="${sep}${white}7d${reset} ${seven_color}${seven_pct_int}%${reset}"
+        [ -n "$seven_reset" ] && line1+=" ${dim}${seven_reset}${reset}"
+        [ -n "$seven_left" ] && line1+=" ${dim}(${seven_left})${reset}"
+    fi
+
+    # Workspace tail: dirname (branch Ndirty)
+    line1+="${sep}${cyan}${dirname}${reset}"
+    if [ -n "$git_branch" ]; then
+        git_info="${git_branch}"
+        [ "$git_dirty_count" -gt 0 ] && git_info+=" ${red}${git_dirty_count}~${reset}${green}"
+        line1+=" ${green}(${git_info})${reset}"
+    fi
 fi
-line1+="${sep}"
-case "$effort" in
-    high) line1+="${magenta}high${reset}" ;;
-    low)  line1+="${dim}low${reset}" ;;
-    *)    line1+="${dim}${effort}${reset}" ;;
-esac
-$thinking_on    && line1+=" ${cyan}thinking${reset}"
-$bypass_perms_on && line1+=" ${red}!permissions${reset}"
 
 # ── Rate limits: stdin-first (zero API calls) ────────
 rate_lines=""
@@ -393,7 +484,7 @@ if [ -n "$five_pct" ]; then
     five_bar=$(build_bar "$five_pct_int" "$bar_width")
     five_color=$(color_for_pct "$five_pct_int")
 
-    rate_lines+="${white}5-hour${reset}  ${five_bar} ${five_color}$(printf "%3d" "$five_pct_int")%${reset}"
+    rate_lines+="${white}5h${reset} ${five_bar} ${five_color}$(printf "%3d" "$five_pct_int")%${reset}"
     if [ -n "$five_reset" ]; then
         rate_lines+=" ${dim}-> ${reset}${white}${five_reset}${reset}"
         [ -n "$five_left" ] && rate_lines+=" ${dim}(${five_left})${reset}"
@@ -408,7 +499,7 @@ if [ -n "$seven_pct" ]; then
     seven_color=$(color_for_pct "$seven_pct_int")
 
     [ -n "$rate_lines" ] && rate_lines+="\n"
-    rate_lines+="${white}7-day${reset}   ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct_int")%${reset}"
+    rate_lines+="${white}7d${reset} ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct_int")%${reset}"
     if [ -n "$seven_reset" ]; then
         rate_lines+=" ${dim}-> ${reset}${white}${seven_reset}${reset}"
         [ -n "$seven_left" ] && rate_lines+=" ${dim}(${seven_left})${reset}"
@@ -447,7 +538,7 @@ extra_max_age=180
 # Check lock file (rate-limit backoff)
 locked=false
 if [ -f "$extra_lock" ]; then
-    lock_mtime=$(stat -f %m "$extra_lock" 2>/dev/null || stat -c %Y "$extra_lock" 2>/dev/null)
+    lock_mtime=$(_mtime "$extra_lock")
     lock_age=$(( $(date +%s) - lock_mtime ))
     blocked_for=$(cat "$extra_lock" 2>/dev/null || echo "300")
     [ "$lock_age" -lt "$blocked_for" ] && locked=true
@@ -456,7 +547,7 @@ fi
 extra_data=""
 needs_extra_refresh=true
 if [ -f "$extra_cache" ]; then
-    extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+    extra_mtime=$(_mtime "$extra_cache")
     extra_age=$(( $(date +%s) - extra_mtime ))
     if [ "$extra_age" -lt "$extra_max_age" ]; then
         needs_extra_refresh=false
@@ -493,7 +584,7 @@ if $needs_extra_refresh && ! $locked; then
         esac
     fi
     if [ -z "$extra_data" ] && [ -f "$extra_cache" ]; then
-        extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+        extra_mtime=$(_mtime "$extra_cache")
         extra_age=$(( $(date +%s) - extra_mtime ))
         [ "$extra_age" -lt 600 ] && extra_data=$(cat "$extra_cache" 2>/dev/null)
     fi
@@ -525,7 +616,7 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
         [ -n "$extra_reset" ] && rate_lines+=" ${dim}-> ${reset}${white}${extra_reset}${reset}"
 
         if [ -f "$extra_cache" ]; then
-            extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+            extra_mtime=$(_mtime "$extra_cache")
             extra_age=$(( $(date +%s) - extra_mtime ))
             if [ "$extra_age" -gt "$extra_max_age" ]; then
                 stale_age=$(format_age "$extra_mtime")
@@ -542,7 +633,7 @@ update_max_age=86400
 
 update_needs_check=true
 if [ -f "$update_cache" ]; then
-    update_mtime=$(stat -f %m "$update_cache" 2>/dev/null || stat -c %Y "$update_cache" 2>/dev/null)
+    update_mtime=$(_mtime "$update_cache")
     update_age=$(( $(date +%s) - update_mtime ))
     [ "$update_age" -lt "$update_max_age" ] && update_needs_check=false
 fi
@@ -580,7 +671,9 @@ done
 
 # ── Output ────────────────────────────────────────────
 printf "%b" "$line1"
-[ -n "$rate_lines" ] && printf "\n\n%b" "$rate_lines"
-[ -n "$sys_line" ]   && printf "\n\n%b" "$sys_line"
+if [ "$mode" = "flex" ]; then
+    [ -n "$rate_lines" ] && printf "\n\n%b" "$rate_lines"
+    [ -n "$sys_line" ]   && printf "\n\n%b" "$sys_line"
+fi
 
 exit 0
