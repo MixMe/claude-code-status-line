@@ -12,15 +12,6 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
-# mtime helper: GNU stat uses `-c %Y`, BSD stat uses `-f %m`. We must NOT
-# fall back blindly — on Linux, `stat -f` means "display file system status"
-# and succeeds with verbose stdout, corrupting arithmetic later. Detect once.
-if stat -c %Y / >/dev/null 2>&1; then
-    _mtime() { stat -c %Y "$1" 2>/dev/null; }
-else
-    _mtime() { stat -f %m "$1" 2>/dev/null; }
-fi
-
 # claude-code-statusline v1.3.0
 VERSION="1.3.0"
 REPO="MixMe/claude-code-status-line"
@@ -168,10 +159,16 @@ let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
     v('cache_create',   d.context_window?.current_usage?.cache_creation_input_tokens ?? 0);
     v('cache_read',     d.context_window?.current_usage?.cache_read_input_tokens ?? 0);
     v('ctx_pct',        d.context_window?.used_percentage ?? 0);
+    v('exceeds_200k',   d.exceeds_200k_tokens ?? false);
+    v('total_duration_ms', d.cost?.total_duration_ms ?? '');
+    v('cwd',            d.workspace?.current_dir ?? d.cwd ?? '');
     v('five_pct',       d.rate_limits?.five_hour?.used_percentage ?? '');
     v('five_resets_epoch', d.rate_limits?.five_hour?.resets_at ?? '');
     v('seven_pct',      d.rate_limits?.seven_day?.used_percentage ?? '');
     v('seven_resets_epoch', d.rate_limits?.seven_day?.resets_at ?? '');
+    v('effort',         s.effortLevel ?? 'default');
+    v('thinking_setting', s.thinking ?? '');
+    v('bypass_perms',   s.bypassPermissions ?? false);
   }catch(e){process.stderr.write(e.message)}
 });
 "
@@ -184,8 +181,9 @@ mkdir -p "$CACHE_DIR"
 # ── Parse stdin + settings in one node call ──────────
 # Defaults (shellcheck SC2154: variables assigned via declare)
 model_name="Claude" ctx_size=200000 input_tokens=0 cache_create=0 cache_read=0
-ctx_pct=0
+ctx_pct=0 exceeds_200k=false total_duration_ms="" cwd=""
 five_pct="" five_resets_epoch="" seven_pct="" seven_resets_epoch=""
+effort="default" thinking_setting="" bypass_perms=false
 
 while IFS='=' read -r key val; do
     declare "$key=$val"
@@ -204,6 +202,62 @@ case "$model_name" in
     *Sonnet*) model_color="$blue" ;;
     *Opus*)  model_color="$magenta" ;;
 esac
+
+# ── Cache hit rate ────────────────────────────────────
+cache_hit_str=""
+if [ "$ctx_used" -gt 0 ]; then
+    cache_hit_pct=$(( cache_read * 100 / ctx_used ))
+    cache_hit_str="${dim}cache:${cache_hit_pct}%${reset}"
+fi
+
+# ── Context overflow warning ─────────────────────────
+ctx_warning=""
+[ "$exceeds_200k" = "true" ] && ctx_warning="${red}long chat${reset}"
+
+# ── Session duration ─────────────────────────────────
+session_duration=""
+if [ -n "$total_duration_ms" ]; then
+    elapsed=$(( total_duration_ms / 1000 ))
+    if [ "$elapsed" -ge 3600 ]; then
+        session_duration="$(( elapsed / 3600 ))h $(( (elapsed % 3600) / 60 ))m"
+    elif [ "$elapsed" -ge 60 ]; then
+        session_duration="$(( elapsed / 60 ))m"
+    else
+        session_duration="${elapsed}s"
+    fi
+fi
+
+# ── Effort + thinking + permissions ──────────────────
+thinking_on=false
+[ "$thinking_setting" = "true" ] || [ "$thinking_setting" = "enabled" ] && thinking_on=true
+
+bypass_perms_on=false
+[ "$bypass_perms" = "true" ] && bypass_perms_on=true
+
+# ── Working directory & git ───────────────────────────
+[ -z "$cwd" ] && cwd=$(pwd)
+dirname=$(basename "$cwd")
+
+git_branch=""
+git_dirty_count=0
+git_ahead=0
+git_behind=0
+git_commit_age=""
+
+if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
+
+    git_dirty_count=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+
+    ab=$(git -C "$cwd" rev-list --count --left-right "@{upstream}...HEAD" 2>/dev/null)
+    if [ -n "$ab" ]; then
+        git_behind=$(echo "$ab" | awk '{print $1}')
+        git_ahead=$(echo "$ab" | awk '{print $2}')
+    fi
+
+    commit_ts=$(git -C "$cwd" log -1 --format="%ct" 2>/dev/null)
+    [ -n "$commit_ts" ] && git_commit_age=$(format_age "$commit_ts")
+fi
 
 # ── Battery ───────────────────────────────────────────
 battery_str=""
@@ -260,7 +314,7 @@ net_up=false
 net_needs_refresh=true
 
 if [ -f "$net_cache" ]; then
-    net_mtime=$(_mtime "$net_cache")
+    net_mtime=$(stat -f %m "$net_cache" 2>/dev/null || stat -c %Y "$net_cache" 2>/dev/null)
     net_age=$(( $(date +%s) - net_mtime ))
     [ "$net_age" -lt 30 ] && net_needs_refresh=false && [ "$(cat "$net_cache")" = "up" ] && net_up=true
 fi
@@ -296,38 +350,37 @@ else
     local_time=$(date +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
 fi
 
-# ── Build compact line ───────────────────────────────
+# ── Build line 1 ─────────────────────────────────────
 ctx_color=$(color_for_pct "$ctx_pct")
 
-if $net_up; then
-    net_dot="${green}●${reset}"
-else
-    net_dot="${red}●${reset}"
+line1="${model_color}${model_name}${reset}"
+line1+="${sep}"
+line1+="${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
+[ -n "$cache_hit_str" ] && line1+=" ${cache_hit_str}"
+[ -n "$ctx_warning" ] && line1+=" ${ctx_warning}"
+line1+="${sep}"
+line1+="${cyan}${dirname}${reset}"
+if [ -n "$git_branch" ]; then
+    git_info="${git_branch}"
+    [ "$git_dirty_count" -gt 0 ] && git_info+=" ${red}${git_dirty_count}~${reset}${green}"
+    sync_str=""
+    [ "$git_ahead" -gt 0 ] && sync_str+="↑${git_ahead}"
+    [ "$git_behind" -gt 0 ] && sync_str+="↓${git_behind}"
+    [ -n "$sync_str" ] && git_info+=" ${dim}${sync_str}${reset}${green}"
+    [ -n "$git_commit_age" ] && git_info+=" ${dim}${git_commit_age}${reset}${green}"
+    line1+=" ${green}(${git_info})${reset}"
 fi
-
-line1=""
-[ -n "$local_time" ] && line1+="${dim}${local_time}${reset}${sep}"
-line1+="${net_dot}"
-line1+="${sep}${model_color}${model_name}${reset}"
-line1+="${sep}${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
-
-# 5-hour segment
-if [ -n "$five_pct" ]; then
-    five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
-    five_reset=$(format_epoch_as_time "$five_resets_epoch" time)
-    five_color=$(color_for_pct "$five_pct_int")
-    line1+="${sep}${white}5h${reset} ${five_color}${five_pct_int}%${reset}"
-    [ -n "$five_reset" ] && line1+=" ${dim}${five_reset}${reset}"
+if [ -n "$session_duration" ]; then
+    line1+="${sep}${dim}${session_duration}${reset}"
 fi
-
-# 7-day segment
-if [ -n "$seven_pct" ]; then
-    seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
-    seven_reset=$(format_epoch_as_time "$seven_resets_epoch" date)
-    seven_color=$(color_for_pct "$seven_pct_int")
-    line1+="${sep}${white}7d${reset} ${seven_color}${seven_pct_int}%${reset}"
-    [ -n "$seven_reset" ] && line1+=" ${dim}${seven_reset}${reset}"
-fi
+line1+="${sep}"
+case "$effort" in
+    high) line1+="${magenta}high${reset}" ;;
+    low)  line1+="${dim}low${reset}" ;;
+    *)    line1+="${dim}${effort}${reset}" ;;
+esac
+$thinking_on    && line1+=" ${cyan}thinking${reset}"
+$bypass_perms_on && line1+=" ${red}!permissions${reset}"
 
 # ── Rate limits: stdin-first (zero API calls) ────────
 rate_lines=""
@@ -394,7 +447,7 @@ extra_max_age=180
 # Check lock file (rate-limit backoff)
 locked=false
 if [ -f "$extra_lock" ]; then
-    lock_mtime=$(_mtime "$extra_lock")
+    lock_mtime=$(stat -f %m "$extra_lock" 2>/dev/null || stat -c %Y "$extra_lock" 2>/dev/null)
     lock_age=$(( $(date +%s) - lock_mtime ))
     blocked_for=$(cat "$extra_lock" 2>/dev/null || echo "300")
     [ "$lock_age" -lt "$blocked_for" ] && locked=true
@@ -403,7 +456,7 @@ fi
 extra_data=""
 needs_extra_refresh=true
 if [ -f "$extra_cache" ]; then
-    extra_mtime=$(_mtime "$extra_cache")
+    extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
     extra_age=$(( $(date +%s) - extra_mtime ))
     if [ "$extra_age" -lt "$extra_max_age" ]; then
         needs_extra_refresh=false
@@ -440,7 +493,7 @@ if $needs_extra_refresh && ! $locked; then
         esac
     fi
     if [ -z "$extra_data" ] && [ -f "$extra_cache" ]; then
-        extra_mtime=$(_mtime "$extra_cache")
+        extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
         extra_age=$(( $(date +%s) - extra_mtime ))
         [ "$extra_age" -lt 600 ] && extra_data=$(cat "$extra_cache" 2>/dev/null)
     fi
@@ -472,7 +525,7 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
         [ -n "$extra_reset" ] && rate_lines+=" ${dim}-> ${reset}${white}${extra_reset}${reset}"
 
         if [ -f "$extra_cache" ]; then
-            extra_mtime=$(_mtime "$extra_cache")
+            extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
             extra_age=$(( $(date +%s) - extra_mtime ))
             if [ "$extra_age" -gt "$extra_max_age" ]; then
                 stale_age=$(format_age "$extra_mtime")
@@ -489,7 +542,7 @@ update_max_age=86400
 
 update_needs_check=true
 if [ -f "$update_cache" ]; then
-    update_mtime=$(_mtime "$update_cache")
+    update_mtime=$(stat -f %m "$update_cache" 2>/dev/null || stat -c %Y "$update_cache" 2>/dev/null)
     update_age=$(( $(date +%s) - update_mtime ))
     [ "$update_age" -lt "$update_max_age" ] && update_needs_check=false
 fi
@@ -527,5 +580,7 @@ done
 
 # ── Output ────────────────────────────────────────────
 printf "%b" "$line1"
+[ -n "$rate_lines" ] && printf "\n\n%b" "$rate_lines"
+[ -n "$sys_line" ]   && printf "\n\n%b" "$sys_line"
 
 exit 0
