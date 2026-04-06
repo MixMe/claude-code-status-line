@@ -121,6 +121,13 @@ TIME_FORMAT=24h
 
 ## Changelog
 
+### v1.3.0
+- **Locale fix**: force `LC_NUMERIC=C` and `LC_TIME=C` so `printf`/`awk` parse JSON floats (e.g. `28.5`) and `date` outputs English month names on locales like `ru_RU.UTF-8` / `de_DE.UTF-8` / `fr_FR.UTF-8` (common on Fedora). Fixes broken 5-hour / 7-day progress blocks.
+- **English-only labels, no abbreviations**: `bat` → `battery`, `mem` → `memory`, `net` → `network`, `5h` → `5-hour`, `7d` → `7-day`, `!perms` → `!permissions`, `gb`/`mb` → `GB`/`MB`.
+- **Interactive time-format picker**: `install.sh` now uses an arrow-key selector (↑/↓, j/k, 1/2, Enter) instead of typing `12h`/`24h`. Cursor restored on Ctrl+C via `trap`.
+- **Windows support**: PowerShell installer (`install.ps1`), Git Bash compatibility, credential path fallbacks.
+- **ShellCheck clean**: all SC2059 / SC2154 warnings fixed.
+
 ### v1.2.0
 - **Zero dependencies**: replaced `jq` with `node` (ships with Claude Code). Nothing to install.
 - **Single node call**: parses stdin JSON + settings.json in one process (was ~20 `jq` calls).
