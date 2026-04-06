@@ -168,16 +168,10 @@ let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
     v('cache_create',   d.context_window?.current_usage?.cache_creation_input_tokens ?? 0);
     v('cache_read',     d.context_window?.current_usage?.cache_read_input_tokens ?? 0);
     v('ctx_pct',        d.context_window?.used_percentage ?? 0);
-    v('exceeds_200k',   d.exceeds_200k_tokens ?? false);
-    v('total_duration_ms', d.cost?.total_duration_ms ?? '');
-    v('cwd',            d.workspace?.current_dir ?? d.cwd ?? '');
     v('five_pct',       d.rate_limits?.five_hour?.used_percentage ?? '');
     v('five_resets_epoch', d.rate_limits?.five_hour?.resets_at ?? '');
     v('seven_pct',      d.rate_limits?.seven_day?.used_percentage ?? '');
     v('seven_resets_epoch', d.rate_limits?.seven_day?.resets_at ?? '');
-    v('effort',         s.effortLevel ?? 'default');
-    v('thinking_setting', s.thinking ?? '');
-    v('bypass_perms',   s.bypassPermissions ?? false);
   }catch(e){process.stderr.write(e.message)}
 });
 "
@@ -190,9 +184,8 @@ mkdir -p "$CACHE_DIR"
 # ── Parse stdin + settings in one node call ──────────
 # Defaults (shellcheck SC2154: variables assigned via declare)
 model_name="Claude" ctx_size=200000 input_tokens=0 cache_create=0 cache_read=0
-ctx_pct=0 exceeds_200k=false total_duration_ms="" cwd=""
+ctx_pct=0
 five_pct="" five_resets_epoch="" seven_pct="" seven_resets_epoch=""
-effort="default" thinking_setting="" bypass_perms=false
 
 while IFS='=' read -r key val; do
     declare "$key=$val"
@@ -211,62 +204,6 @@ case "$model_name" in
     *Sonnet*) model_color="$blue" ;;
     *Opus*)  model_color="$magenta" ;;
 esac
-
-# ── Cache hit rate ────────────────────────────────────
-cache_hit_str=""
-if [ "$ctx_used" -gt 0 ]; then
-    cache_hit_pct=$(( cache_read * 100 / ctx_used ))
-    cache_hit_str="${dim}cache:${cache_hit_pct}%${reset}"
-fi
-
-# ── Context overflow warning ─────────────────────────
-ctx_warning=""
-[ "$exceeds_200k" = "true" ] && ctx_warning="${red}long chat${reset}"
-
-# ── Session duration ─────────────────────────────────
-session_duration=""
-if [ -n "$total_duration_ms" ]; then
-    elapsed=$(( total_duration_ms / 1000 ))
-    if [ "$elapsed" -ge 3600 ]; then
-        session_duration="$(( elapsed / 3600 ))h $(( (elapsed % 3600) / 60 ))m"
-    elif [ "$elapsed" -ge 60 ]; then
-        session_duration="$(( elapsed / 60 ))m"
-    else
-        session_duration="${elapsed}s"
-    fi
-fi
-
-# ── Effort + thinking + permissions ──────────────────
-thinking_on=false
-[ "$thinking_setting" = "true" ] || [ "$thinking_setting" = "enabled" ] && thinking_on=true
-
-bypass_perms_on=false
-[ "$bypass_perms" = "true" ] && bypass_perms_on=true
-
-# ── Working directory & git ───────────────────────────
-[ -z "$cwd" ] && cwd=$(pwd)
-dirname=$(basename "$cwd")
-
-git_branch=""
-git_dirty_count=0
-git_ahead=0
-git_behind=0
-git_commit_age=""
-
-if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
-
-    git_dirty_count=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-
-    ab=$(git -C "$cwd" rev-list --count --left-right "@{upstream}...HEAD" 2>/dev/null)
-    if [ -n "$ab" ]; then
-        git_behind=$(echo "$ab" | awk '{print $1}')
-        git_ahead=$(echo "$ab" | awk '{print $2}')
-    fi
-
-    commit_ts=$(git -C "$cwd" log -1 --format="%ct" 2>/dev/null)
-    [ -n "$commit_ts" ] && git_commit_age=$(format_age "$commit_ts")
-fi
 
 # ── Battery ───────────────────────────────────────────
 battery_str=""
