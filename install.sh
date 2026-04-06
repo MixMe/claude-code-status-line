@@ -111,6 +111,71 @@ else
 fi
 echo "Time format: ${time_format}"
 
+# ── Mode ──────────────────────────────────────────────
+mode="compact"
+if [ -f "$CONFIG_FILE" ]; then
+    existing_mode=$(grep '^MODE=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    [ -n "$existing_mode" ] && mode="$existing_mode"
+fi
+
+if $has_tty; then
+    mode_label=("compact  (single line)" "flex     (line + rate bars + system info)")
+    mode_value=("compact" "flex")
+    selected=0
+    [ "$mode" = "flex" ] && selected=1
+
+    render_mode() {
+        local i
+        for i in 0 1; do
+            if [ "$i" -eq "$selected" ]; then
+                printf '  \033[1;36m> %s\033[0m\n' "${mode_label[$i]}" > /dev/tty
+            else
+                printf '    \033[2m%s\033[0m\n' "${mode_label[$i]}" > /dev/tty
+            fi
+        done
+    }
+
+    printf 'Select mode (use arrow keys or 1/2, Enter to confirm):\n' > /dev/tty
+    printf '\033[?25l' > /dev/tty
+    trap 'printf "\033[?25h" > /dev/tty' EXIT INT TERM
+
+    render_mode
+
+    while true; do
+        IFS= read -rsn1 key </dev/tty 2>/dev/null || { key=""; break; }
+        case "$key" in
+            $'\x1b')
+                IFS= read -rsn2 -t 0.05 rest </dev/tty 2>/dev/null || rest=""
+                case "$rest" in
+                    '[A'|'[D') selected=0 ;;
+                    '[B'|'[C') selected=1 ;;
+                esac
+                ;;
+            '1') selected=0 ;;
+            '2') selected=1 ;;
+            'k'|'K') selected=0 ;;
+            'j'|'J') selected=1 ;;
+            '')  break ;;
+            'q'|'Q') break ;;
+        esac
+        printf '\033[2A' > /dev/tty
+        render_mode
+    done
+
+    printf '\033[?25h' > /dev/tty
+    trap - EXIT INT TERM
+
+    mode="${mode_value[$selected]}"
+fi
+
+if [ -f "$CONFIG_FILE" ] && grep -q '^MODE=' "$CONFIG_FILE" 2>/dev/null; then
+    tmp=$(mktemp)
+    sed "s/^MODE=.*/MODE=${mode}/" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+else
+    echo "MODE=${mode}" >> "$CONFIG_FILE"
+fi
+echo "Mode: ${mode}"
+
 # ── Clear stale caches ───────────────────────────────
 TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
 rm -f "$TMPDIR/claude/statusline-usage-cache.json" "$TMPDIR/claude/statusline-extra-cache.json" \
