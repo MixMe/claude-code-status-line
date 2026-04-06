@@ -49,16 +49,58 @@ has_tty=false
 (echo "" > /dev/tty) 2>/dev/null && has_tty=true
 
 if $has_tty; then
-    echo "Time format [12h = 2:34pm / 24h = 14:34] (current: ${time_format}):"
-    printf "  Enter 12h or 24h, or press Enter to keep current: "
-    input_fmt=""
-    read -r input_fmt </dev/tty 2>/dev/null || input_fmt=""
-    input_fmt=$(echo "$input_fmt" | tr -d '[:space:]')
-    case "$input_fmt" in
-        12h|24h) time_format="$input_fmt" ;;
-        "") ;;
-        *) echo "  Unknown value '${input_fmt}', keeping ${time_format}" ;;
-    esac
+    # Interactive selector: arrow keys (↑/↓), j/k, 1/2 to switch, Enter to confirm.
+    # Options are redrawn in place using ANSI cursor-up escapes.
+    options_label=("12-hour  (2:34pm)" "24-hour  (14:34)")
+    options_value=("12h" "24h")
+    selected=0
+    [ "$time_format" = "24h" ] && selected=1
+
+    render_options() {
+        local i
+        for i in 0 1; do
+            if [ "$i" -eq "$selected" ]; then
+                printf '  \033[1;36m> %s\033[0m\n' "${options_label[$i]}" > /dev/tty
+            else
+                printf '    \033[2m%s\033[0m\n' "${options_label[$i]}" > /dev/tty
+            fi
+        done
+    }
+
+    printf 'Select time format (use arrow keys or 1/2, Enter to confirm):\n' > /dev/tty
+    # Hide cursor during selection; always restore on exit.
+    printf '\033[?25l' > /dev/tty
+    trap 'printf "\033[?25h" > /dev/tty' EXIT INT TERM
+
+    render_options
+
+    while true; do
+        IFS= read -rsn1 key </dev/tty 2>/dev/null || { key=""; break; }
+        case "$key" in
+            $'\x1b')
+                # Escape sequence: read the remaining two bytes of an arrow key.
+                IFS= read -rsn2 -t 0.05 rest </dev/tty 2>/dev/null || rest=""
+                case "$rest" in
+                    '[A'|'[D') selected=0 ;;  # up / left
+                    '[B'|'[C') selected=1 ;;  # down / right
+                esac
+                ;;
+            '1') selected=0 ;;
+            '2') selected=1 ;;
+            'k'|'K') selected=0 ;;
+            'j'|'J') selected=1 ;;
+            '')  break ;;  # Enter confirms
+            'q'|'Q') break ;;
+        esac
+        # Move cursor up 2 lines and redraw both options in place.
+        printf '\033[2A' > /dev/tty
+        render_options
+    done
+
+    printf '\033[?25h' > /dev/tty
+    trap - EXIT INT TERM
+
+    time_format="${options_value[$selected]}"
 fi
 
 if [ -f "$CONFIG_FILE" ] && grep -q '^TIME_FORMAT=' "$CONFIG_FILE" 2>/dev/null; then
