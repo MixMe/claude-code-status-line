@@ -10,7 +10,13 @@ A rich, zero-dependency status line for [Claude Code](https://claude.ai/code) �
 
 ## Preview
 
-![preview](preview.svg)
+**Compact mode** — single line:
+
+![compact](preview-compact.png)
+
+**Flex mode** — line + rate bars + system info:
+
+![flex](preview-flex.png)
 
 ## Install / Update
 
