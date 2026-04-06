@@ -1,6 +1,17 @@
 #!/bin/bash
 set -f
 
+# Force C locale for numbers and dates. Output is English-only by design:
+#   - LC_NUMERIC=C: bash/awk printf use strtod(), which on locales like
+#     ru_RU.UTF-8, de_DE.UTF-8, fr_FR.UTF-8 expects `,` as decimal
+#     separator and fails to parse JSON floats (e.g. 28.5) from Claude Code.
+#   - LC_TIME=C: `date` outputs month/day names in English (nov, mon, ...)
+#     instead of localized strings (нояб, пн, ...).
+# LC_CTYPE is left alone so UTF-8 characters (bar glyphs, bullets) render
+# correctly. LC_ALL is unset first because it overrides all LC_* per POSIX.
+unset LC_ALL
+export LC_NUMERIC=C LC_TIME=C
+
 # claude-code-statusline v1.2.0
 VERSION="1.2.0"
 REPO="MixMe/claude-code-status-line"
@@ -263,11 +274,11 @@ fi
 
 if [ -n "$batt_pct" ]; then
     if [ "$batt_pct" -le 20 ]; then
-        battery_str="${red}bat ${batt_pct}%${reset}"
+        battery_str="${red}battery ${batt_pct}%${reset}"
     elif [ "$batt_pct" -le 40 ]; then
-        battery_str="${yellow}bat ${batt_pct}%${reset}"
+        battery_str="${yellow}battery ${batt_pct}%${reset}"
     else
-        battery_str="${dim}bat ${batt_pct}%${reset}"
+        battery_str="${dim}battery ${batt_pct}%${reset}"
     fi
 fi
 
@@ -281,18 +292,18 @@ if command -v vm_stat >/dev/null 2>&1; then
     if [ -n "$free_p" ] && [ -n "$inactive_p" ]; then
         free_mb=$(( (free_p + inactive_p) * page_size / 1024 / 1024 ))
         if [ "$free_mb" -ge 1024 ]; then
-            mem_str="${dim}mem $(awk "BEGIN {printf \"%.1fgb\", $free_mb/1024}") free${reset}"
+            mem_str="${dim}memory $(awk "BEGIN {printf \"%.1fGB\", $free_mb/1024}") free${reset}"
         else
-            mem_str="${dim}mem ${free_mb}mb free${reset}"
+            mem_str="${dim}memory ${free_mb}MB free${reset}"
         fi
     fi
 elif [ -f /proc/meminfo ]; then
     avail_kb=$(awk '/MemAvailable:/ {print $2}' /proc/meminfo)
     if [ -n "$avail_kb" ]; then
         if [ "$avail_kb" -ge 1048576 ]; then
-            mem_str="${dim}mem $(awk "BEGIN {printf \"%.1fgb\", $avail_kb/1048576}") free${reset}"
+            mem_str="${dim}memory $(awk "BEGIN {printf \"%.1fGB\", $avail_kb/1048576}") free${reset}"
         else
-            mem_str="${dim}mem $(awk "BEGIN {printf \"%.0fmb\", $avail_kb/1024}") free${reset}"
+            mem_str="${dim}memory $(awk "BEGIN {printf \"%.0fMB\", $avail_kb/1024}") free${reset}"
         fi
     fi
 fi
@@ -320,9 +331,9 @@ if $net_needs_refresh; then
 fi
 
 if $net_up; then
-    net_str="${dim}net ${green}●${reset}"
+    net_str="${dim}network ${green}●${reset}"
 else
-    net_str="${dim}net ${red}○${reset}"
+    net_str="${dim}network ${red}○${reset}"
 fi
 
 # ── Local time ────────────────────────────────────────
@@ -369,7 +380,7 @@ case "$effort" in
     *)    line1+="${dim}${effort}${reset}" ;;
 esac
 $thinking_on    && line1+=" ${cyan}thinking${reset}"
-$bypass_perms_on && line1+=" ${red}!perms${reset}"
+$bypass_perms_on && line1+=" ${red}!permissions${reset}"
 
 # ── Rate limits: stdin-first (zero API calls) ────────
 rate_lines=""
@@ -382,7 +393,7 @@ if [ -n "$five_pct" ]; then
     five_bar=$(build_bar "$five_pct_int" "$bar_width")
     five_color=$(color_for_pct "$five_pct_int")
 
-    rate_lines+="${white}5h${reset}  ${five_bar} ${five_color}$(printf "%3d" "$five_pct_int")%${reset}"
+    rate_lines+="${white}5-hour${reset}  ${five_bar} ${five_color}$(printf "%3d" "$five_pct_int")%${reset}"
     if [ -n "$five_reset" ]; then
         rate_lines+=" ${dim}-> ${reset}${white}${five_reset}${reset}"
         [ -n "$five_left" ] && rate_lines+=" ${dim}(${five_left})${reset}"
@@ -397,7 +408,7 @@ if [ -n "$seven_pct" ]; then
     seven_color=$(color_for_pct "$seven_pct_int")
 
     [ -n "$rate_lines" ] && rate_lines+="\n"
-    rate_lines+="${white}7d${reset}  ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct_int")%${reset}"
+    rate_lines+="${white}7-day${reset}   ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct_int")%${reset}"
     if [ -n "$seven_reset" ]; then
         rate_lines+=" ${dim}-> ${reset}${white}${seven_reset}${reset}"
         [ -n "$seven_left" ] && rate_lines+=" ${dim}(${seven_left})${reset}"
