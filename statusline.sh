@@ -338,10 +338,13 @@ fi
 
 # ── Local time ────────────────────────────────────────
 time_format="12h"
+statusline_mode="full"
 config_file="$HOME/.config/claude-statusline/config"
 [ -f "$config_file" ] && {
     fmt=$(grep '^TIME_FORMAT=' "$config_file" 2>/dev/null | cut -d= -f2)
     [ -n "$fmt" ] && time_format="$fmt"
+    mode=$(grep '^STATUSLINE_MODE=' "$config_file" 2>/dev/null | cut -d= -f2)
+    [ -n "$mode" ] && statusline_mode="$mode"
 }
 
 if [ "$time_format" = "24h" ]; then
@@ -609,6 +612,53 @@ for part in "${sys_parts[@]}"; do
 done
 
 # ── Output ────────────────────────────────────────────
+if [ "$statusline_mode" = "compact" ]; then
+    # Single-line terse output: model, context, and credit remainders.
+    # Percentages are shown as REMAINING (100 - used), coloured by urgency
+    # so green = plenty left, red = almost exhausted. The Sonnet sub-limit
+    # and prepaid extra-credit balance are included inline when present.
+    # Defaults here protect against missing API data (extra_data empty).
+    : "${sonnet_enabled:=false}" "${sonnet_pct:=0}" "${sonnet_resets_epoch:=}"
+    : "${extra_enabled:=false}" "${extra_pct:=0}" "${extra_used:=0.00}" "${extra_limit:=0.00}"
+
+    compact_line="${model_color}${model_name}${reset}"
+    compact_line+="${sep}${ctx_color}ctx ${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
+
+    if [ -n "$five_pct" ]; then
+        five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
+        five_rem=$(( 100 - five_pct_int ))
+        five_color=$(color_for_pct "$five_pct_int")
+        compact_line+="${sep}${five_color}5h ${five_rem}%${reset}"
+        five_left=$(format_epoch_time_left "$five_resets_epoch")
+        [ -n "$five_left" ] && compact_line+=" ${dim}${five_left}${reset}"
+    fi
+
+    if [ -n "$seven_pct" ]; then
+        seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
+        seven_rem=$(( 100 - seven_pct_int ))
+        seven_color=$(color_for_pct "$seven_pct_int")
+        compact_line+="${sep}${seven_color}7d ${seven_rem}%${reset}"
+        seven_left=$(format_epoch_time_left "$seven_resets_epoch")
+        [ -n "$seven_left" ] && compact_line+=" ${dim}${seven_left}${reset}"
+    fi
+
+    if [ "$sonnet_enabled" = "true" ]; then
+        sonnet_rem=$(( 100 - sonnet_pct ))
+        sonnet_color=$(color_for_pct "$sonnet_pct")
+        compact_line+="${sep}${sonnet_color}sonnet ${sonnet_rem}%${reset}"
+        sonnet_left=$(format_epoch_time_left "$sonnet_resets_epoch")
+        [ -n "$sonnet_left" ] && compact_line+=" ${dim}${sonnet_left}${reset}"
+    fi
+
+    if [ "$extra_enabled" = "true" ]; then
+        extra_color=$(color_for_pct "$extra_pct")
+        compact_line+="${sep}${white}extra${reset} ${extra_color}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
+    fi
+
+    printf "%b" "$compact_line"
+    exit 0
+fi
+
 printf "%b" "$line1"
 [ -n "$rate_lines" ] && printf "\n\n%b" "$rate_lines"
 [ -n "$sys_line" ]   && printf "\n\n%b" "$sys_line"
