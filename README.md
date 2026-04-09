@@ -2,7 +2,7 @@
 
 [![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
+[![Version](https://img.shields.io/badge/version-1.4.1-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 
@@ -84,7 +84,7 @@ Also works in WSL or [Git Bash](https://git-scm.com/downloads/win) with the `cur
 Two rendering modes, selected at install time and switchable via config:
 
 - **full** (default) — three-block multi-line layout: session info, rate-limit bars, system metrics. What you see in the "Line 1 / Line 2 / Line 3" tables above.
-- **compact** — single-line terse output: model, context (with absolute token counts), and credit remainders for 5-hour, 7-day, Sonnet and extra. Rate-limit percentages are shown as **remaining** (so `99%` means "99% of budget still untouched") while colour urgency is still driven by usage so green = plenty left, red = near exhaustion.
+- **compact** — single-line terse output: model, context (with absolute token counts), and rate-limit usage for 5-hour, 7-day, Sonnet and extra. Percentages use the **same semantic as full mode** (used, not remaining), so a given metric shows the exact same number in both layouts. Colour urgency tracks usage: green = low, red = near exhaustion.
 
 Switch at any time by editing `~/.config/claude-statusline/config`:
 
@@ -151,6 +151,9 @@ STATUSLINE_MODE=compact
 `TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
 
 ## Changelog
+
+### v1.4.1
+- **Fix: compact mode rate-limit percentages now match full mode**. v1.4.0 displayed compact-mode 5-hour / 7-day / Sonnet as *remaining* (100 − used) while `ctx` and full-mode bars continued to show *used*, which made identical metrics read as different numbers depending on layout (e.g. 7-day at 82% used appeared as `7d 18%` in compact but `82%` in full). All percentages are now used, consistently, in both modes.
 
 ### v1.4.0
 - **Sonnet weekly sub-limit**: new third rate-limit line showing the Sonnet-specific weekly quota enforced on Max plans, parsed from the same `/api/oauth/usage` response already fetched for extra usage — no additional API calls. Silently hidden on non-Max plans.
