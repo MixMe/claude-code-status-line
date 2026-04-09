@@ -500,6 +500,36 @@ if $needs_extra_refresh && ! $locked; then
 fi
 
 if [ -n "$extra_data" ]; then
+    # Sonnet weekly sub-limit (Max plan) — comes only from /api/oauth/usage,
+    # not from the statusline stdin payload. Parse from the same cached
+    # response used for extra_usage, so no additional API call is made.
+    sonnet_enabled=false sonnet_pct=0 sonnet_resets_epoch=""
+    eval "$(echo "$extra_data" | node -e "
+let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+  try{
+    const j=JSON.parse(d).seven_day_sonnet;
+    if(!j){console.log('sonnet_enabled=false');return}
+    console.log('sonnet_enabled=true');
+    console.log('sonnet_pct='+Math.round(j.utilization??0));
+    const r=j.resets_at?Math.floor(new Date(j.resets_at).getTime()/1000):'';
+    console.log('sonnet_resets_epoch='+r);
+  }catch{console.log('sonnet_enabled=false')}
+})" 2>/dev/null)"
+
+    if [ "$sonnet_enabled" = "true" ]; then
+        sonnet_reset=$(format_epoch_as_time "$sonnet_resets_epoch" datetime)
+        sonnet_left=$(format_epoch_time_left "$sonnet_resets_epoch")
+        sonnet_bar=$(build_bar "$sonnet_pct" "$bar_width")
+        sonnet_color=$(color_for_pct "$sonnet_pct")
+
+        [ -n "$rate_lines" ] && rate_lines+="\n"
+        rate_lines+="${white}sonnet${reset}  ${sonnet_bar} ${sonnet_color}$(printf "%3d" "$sonnet_pct")%${reset}"
+        if [ -n "$sonnet_reset" ]; then
+            rate_lines+=" ${dim}-> ${reset}${white}${sonnet_reset}${reset}"
+            [ -n "$sonnet_left" ] && rate_lines+=" ${dim}(${sonnet_left})${reset}"
+        fi
+    fi
+
     extra_enabled=false extra_pct=0 extra_used="0.00" extra_limit="0.00"
     eval "$(echo "$extra_data" | node -e "
 let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
