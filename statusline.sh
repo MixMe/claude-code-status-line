@@ -17,8 +17,8 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
-# claude-code-statusline v1.3.0
-VERSION="1.3.0"
+# claude-code-statusline v1.4.0
+VERSION="1.4.0"
 REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
