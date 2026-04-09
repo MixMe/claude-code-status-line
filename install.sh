@@ -78,8 +78,14 @@ if $has_tty; then
         IFS= read -rsn1 key </dev/tty 2>/dev/null || { key=""; break; }
         case "$key" in
             $'\x1b')
-                # Escape sequence: read the remaining two bytes of an arrow key.
-                IFS= read -rsn2 -t 0.05 rest </dev/tty 2>/dev/null || rest=""
+                # Escape sequence: read the remaining two bytes of an arrow
+                # key. Integer timeout (-t 1) is MANDATORY for bash 3.2, which
+                # ships with macOS by default: bash 3.2 does not support
+                # fractional timeouts and fails `-t 0.05` immediately with
+                # "invalid timeout specification", silently swallowing the
+                # escape sequence so arrow keys stopped working (only 1/2
+                # still worked, via the non-escape branches below).
+                IFS= read -rsn2 -t 1 rest </dev/tty 2>/dev/null || rest=""
                 case "$rest" in
                     '[A'|'[D') selected=0 ;;  # up / left
                     '[B'|'[C') selected=1 ;;  # down / right
