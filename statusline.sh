@@ -1,4 +1,9 @@
 #!/bin/bash
+# Disable pathname expansion (globbing) process-wide. The script has no
+# intentional glob patterns anywhere — every `[A'|'[B'` inside case
+# statements is quoted so globbing is irrelevant for correctness — but
+# disabling it defensively prevents surprises if a future edit prints an
+# unquoted value containing `*`, `?`, or `[` into a path-like context.
 set -f
 
 # Force C locale for numbers and dates. Output is English-only by design:
@@ -244,16 +249,29 @@ git_ahead=0
 git_behind=0
 git_commit_age=""
 
-if git -C "$cwd" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    git_branch=$(git -C "$cwd" symbolic-ref --short HEAD 2>/dev/null)
+# Single `git status --porcelain=v2 --branch` call yields inside-work-tree
+# check (exit code), branch name, upstream tracking and ahead/behind counts,
+# and the file list for dirty count — replacing 4 separate git invocations.
+# Porcelain v2 format has been stable since Git 2.11 (2016).
+if git_status=$(git -C "$cwd" --no-optional-locks status --porcelain=v2 --branch 2>/dev/null); then
+    while IFS= read -r gs_line; do
+        case "$gs_line" in
+            '# branch.head '*)
+                git_branch="${gs_line#\# branch.head }"
+                [ "$git_branch" = "(detached)" ] && git_branch=""
+                ;;
+            '# branch.ab '*)
+                ab="${gs_line#\# branch.ab }"
+                # Format: "+<ahead> -<behind>"
+                gs_ahead="${ab%% *}"
+                gs_behind="${ab##* }"
+                git_ahead="${gs_ahead#+}"
+                git_behind="${gs_behind#-}"
+                ;;
+        esac
+    done <<< "$git_status"
 
-    git_dirty_count=$(git -C "$cwd" --no-optional-locks status --porcelain 2>/dev/null | wc -l | tr -d ' ')
-
-    ab=$(git -C "$cwd" rev-list --count --left-right "@{upstream}...HEAD" 2>/dev/null)
-    if [ -n "$ab" ]; then
-        git_behind=$(echo "$ab" | awk '{print $1}')
-        git_ahead=$(echo "$ab" | awk '{print $2}')
-    fi
+    git_dirty_count=$(echo "$git_status" | awk '!/^#/ {n++} END {print n+0}')
 
     commit_ts=$(git -C "$cwd" log -1 --format="%ct" 2>/dev/null)
     [ -n "$commit_ts" ] && git_commit_age=$(format_age "$commit_ts")
@@ -458,6 +476,11 @@ fi
 
 extra_data=""
 needs_extra_refresh=true
+# Defaults so downstream code can reference these unconditionally even
+# when the /api/oauth/usage fetch fails or the response has no matching
+# sections (non-Max plan, no prepaid credits, etc.).
+sonnet_enabled=false sonnet_pct=0 sonnet_resets_epoch=""
+extra_enabled=false extra_pct=0 extra_used="0.00" extra_limit="0.00"
 if [ -f "$extra_cache" ]; then
     extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
     extra_age=$(( $(date +%s) - extra_mtime ))
@@ -482,13 +505,14 @@ if $needs_extra_refresh && ! $locked; then
 
         case "$http_code" in
             200)
-                has_extra=$(echo "$response_body" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).extra_usage?'yes':'no')}catch{console.log('no')}})" 2>/dev/null)
-                if [ "$has_extra" = "yes" ]; then
-                    extra_data="$response_body"
-                    tmp=$(mktemp "$CACHE_DIR/extra-XXXXXX")
-                    echo "$response_body" > "$tmp" && mv "$tmp" "$extra_cache"
-                    rm -f "$extra_lock" 2>/dev/null
-                fi
+                # Cache every successful response unconditionally; the
+                # consolidated parser below tolerates missing sections
+                # (extra_usage / seven_day_sonnet may not exist on all plans)
+                # and simply leaves the corresponding *_enabled flags false.
+                extra_data="$response_body"
+                tmp=$(mktemp "$CACHE_DIR/extra-XXXXXX")
+                echo "$response_body" > "$tmp" && mv "$tmp" "$extra_cache"
+                rm -f "$extra_lock" 2>/dev/null
                 ;;
             429) echo "300" > "$extra_lock" ;;
             401|403) echo "600" > "$extra_lock" ;;
@@ -503,20 +527,30 @@ if $needs_extra_refresh && ! $locked; then
 fi
 
 if [ -n "$extra_data" ]; then
-    # Sonnet weekly sub-limit (Max plan) — comes only from /api/oauth/usage,
-    # not from the statusline stdin payload. Parse from the same cached
-    # response used for extra_usage, so no additional API call is made.
-    sonnet_enabled=false sonnet_pct=0 sonnet_resets_epoch=""
+    # Single node invocation parses BOTH the Sonnet weekly sub-limit
+    # (seven_day_sonnet — Max plan only) AND the prepaid extra_usage block
+    # from the same cached /api/oauth/usage response. Consolidating what
+    # used to be two separate node forks roughly halves node spawn overhead
+    # on every statusline render.
     eval "$(echo "$extra_data" | node -e "
 let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
   try{
-    const j=JSON.parse(d).seven_day_sonnet;
-    if(!j){console.log('sonnet_enabled=false');return}
-    console.log('sonnet_enabled=true');
-    console.log('sonnet_pct='+Math.round(j.utilization??0));
-    const r=j.resets_at?Math.floor(new Date(j.resets_at).getTime()/1000):'';
-    console.log('sonnet_resets_epoch='+r);
-  }catch{console.log('sonnet_enabled=false')}
+    const j=JSON.parse(d);
+    const son=j.seven_day_sonnet;
+    if(son){
+      console.log('sonnet_enabled=true');
+      console.log('sonnet_pct='+Math.round(son.utilization??0));
+      const r=son.resets_at?Math.floor(new Date(son.resets_at).getTime()/1000):'';
+      console.log('sonnet_resets_epoch='+r);
+    }else{console.log('sonnet_enabled=false')}
+    const ex=j.extra_usage;
+    if(ex&&ex.is_enabled){
+      console.log('extra_enabled=true');
+      console.log('extra_pct='+Math.round(ex.utilization??0));
+      console.log('extra_used='+(ex.used_credits/100).toFixed(2));
+      console.log('extra_limit='+(ex.monthly_limit/100).toFixed(2));
+    }else{console.log('extra_enabled=false')}
+  }catch{console.log('sonnet_enabled=false');console.log('extra_enabled=false')}
 })" 2>/dev/null)"
 
     if [ "$sonnet_enabled" = "true" ]; then
@@ -532,19 +566,6 @@ let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
             [ -n "$sonnet_left" ] && rate_lines+=" ${dim}(${sonnet_left})${reset}"
         fi
     fi
-
-    extra_enabled=false extra_pct=0 extra_used="0.00" extra_limit="0.00"
-    eval "$(echo "$extra_data" | node -e "
-let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
-  try{
-    const j=JSON.parse(d).extra_usage;
-    if(!j||!j.is_enabled){console.log('extra_enabled=false');return}
-    console.log('extra_enabled=true');
-    console.log('extra_pct='+Math.round(j.utilization??0));
-    console.log('extra_used='+(j.used_credits/100).toFixed(2));
-    console.log('extra_limit='+(j.monthly_limit/100).toFixed(2));
-  }catch{console.log('extra_enabled=false')}
-})" 2>/dev/null)"
 
     if [ "$extra_enabled" = "true" ]; then
         extra_bar=$(build_bar "$extra_pct" "$bar_width")
@@ -617,10 +638,8 @@ if [ "$statusline_mode" = "compact" ]; then
     # Percentages are shown as REMAINING (100 - used), coloured by urgency
     # so green = plenty left, red = almost exhausted. The Sonnet sub-limit
     # and prepaid extra-credit balance are included inline when present.
-    # Defaults here protect against missing API data (extra_data empty).
-    : "${sonnet_enabled:=false}" "${sonnet_pct:=0}" "${sonnet_resets_epoch:=}"
-    : "${extra_enabled:=false}" "${extra_pct:=0}" "${extra_used:=0.00}" "${extra_limit:=0.00}"
-
+    # All *_enabled / *_pct / *_used / *_limit variables are safely
+    # pre-initialized near the top of this script.
     compact_line="${model_color}${model_name}${reset}"
     compact_line+="${sep}${ctx_color}ctx ${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
 
