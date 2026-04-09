@@ -2,7 +2,7 @@
 
 [![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
+[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 
@@ -10,7 +10,17 @@ A rich, zero-dependency status line for [Claude Code](https://claude.ai/code) �
 
 ## Preview
 
-![preview](preview.svg)
+**Full mode** (default) — three-block layout with rate-limit bars and system info:
+
+![preview full](preview-full.svg)
+
+**Compact mode** — single line, terse, model plus credit remainders:
+
+![preview compact](preview-compact.svg)
+
+Switch between them at install time or any time via
+`STATUSLINE_MODE=compact` / `STATUSLINE_MODE=full` in
+`~/.config/claude-statusline/config`.
 
 ## Install / Update
 
@@ -49,9 +59,10 @@ Also works in WSL or [Git Bash](https://git-scm.com/downloads/win) with the `cur
 **Line 2 — Rate limits**
 | Field | Description |
 |---|---|
-| 5h | 5-hour usage bar with reset time and countdown |
-| 7d | 7-day usage bar with reset date and countdown |
-| extra | Monthly extra credits (shown only when enabled) |
+| 5-hour | 5-hour usage bar with reset time and countdown |
+| 7-day | 7-day usage bar with reset date and countdown |
+| sonnet | Sonnet weekly sub-limit (Max plan only, from `/api/oauth/usage`) |
+| extra | Monthly prepaid credits (shown only when enabled) |
 
 **Line 3 — System**
 | Field | Description |
@@ -68,14 +79,31 @@ Also works in WSL or [Git Bash](https://git-scm.com/downloads/win) with the `cur
 - `bash` 4+, `curl`
 - macOS, Linux, or Windows (WSL / Git Bash)
 
+## Statusline modes
+
+Two rendering modes, selected at install time and switchable via config:
+
+- **full** (default) — three-block multi-line layout: session info, rate-limit bars, system metrics. What you see in the "Line 1 / Line 2 / Line 3" tables above.
+- **compact** — single-line terse output: model, context (with absolute token counts), and credit remainders for 5-hour, 7-day, Sonnet and extra. Rate-limit percentages are shown as **remaining** (so `99%` means "99% of budget still untouched") while colour urgency is still driven by usage so green = plenty left, red = near exhaustion.
+
+Switch at any time by editing `~/.config/claude-statusline/config`:
+
+```
+STATUSLINE_MODE=compact
+```
+
+or re-run the installer and pick interactively.
+
 ## How rate limits work
 
-Rate limits (5h and 7d) are read directly from Claude Code's stdin JSON — **zero API calls**, always fresh.
+The 5-hour and 7-day usage percentages are read directly from Claude Code's stdin JSON — **zero API calls**, always fresh on every render.
 
-**Extra usage** (monthly credits) is fetched from the API with smart caching:
+The **Sonnet weekly sub-limit** and the **prepaid extra-credit balance** are both fetched from the `/api/oauth/usage` endpoint (they are not exposed via the statusline stdin payload) and cached together:
+- Single API call — both values come out of one response
 - Cached for 3 minutes
 - Backs off 5 min on rate limit (429), 10 min on auth error
 - Stale data shown with age indicator (max 10 min)
+- Sonnet line is hidden on non-Max plans (no `seven_day_sonnet` field)
 
 ## Customization
 
@@ -111,15 +139,26 @@ else
 fi
 ```
 
-### Time format
+### Time format and mode
 
-The installer asks for 12h/24h preference. To change later, edit `~/.config/claude-statusline/config`:
+The installer asks for time format and statusline mode interactively. To change later, edit `~/.config/claude-statusline/config`:
 
 ```
 TIME_FORMAT=24h
+STATUSLINE_MODE=compact
 ```
 
+`TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
+
 ## Changelog
+
+### v1.4.0
+- **Sonnet weekly sub-limit**: new third rate-limit line showing the Sonnet-specific weekly quota enforced on Max plans, parsed from the same `/api/oauth/usage` response already fetched for extra usage — no additional API calls. Silently hidden on non-Max plans.
+- **Compact single-line mode**: opt-in single-line layout showing model, context (with absolute token counts), and credit remainders for 5-hour / 7-day / Sonnet / extra. Rate-limit percentages are shown as remaining, so the number reads as "how much budget I still have" while colour urgency still tracks usage. Full mode remains default and untouched; compact is strictly additive.
+- **Interactive mode picker at install**: the installer now asks for `full` vs `compact` in addition to the existing time-format question, using the same arrow-key selector.
+- **Fix: arrow-key selection on bash 3.2 (macOS default)**: the fractional `read -t 0.05` timeout in the interactive picker failed immediately on macOS' bundled bash 3.2 with "invalid timeout specification", silently swallowing arrow-key escape sequences so only the 1/2 hotkeys worked. Switched to integer `-t 1` which is supported on bash 3.2+.
+- **Perf: fewer forks per render**: node invocations reduced from 4 to 2 per render by merging the Sonnet and extra-usage parsers into a single process and removing the has_extra caching gate. Git invocations reduced from 5 to 2 by replacing the `rev-parse` / `symbolic-ref` / `status --porcelain` / `rev-list --count --left-right` combo with a single `git status --porcelain=v2 --branch` that yields inside-work-tree, branch, ahead/behind and dirty count in one call.
+- **Docs**: README now documents the two modes with separate preview images and expanded rate-limit explanation.
 
 ### v1.3.0
 - **Locale fix**: force `LC_NUMERIC=C` and `LC_TIME=C` so `printf`/`awk` parse JSON floats (e.g. `28.5`) and `date` outputs English month names on locales like `ru_RU.UTF-8` / `de_DE.UTF-8` / `fr_FR.UTF-8` (common on Fedora). Fixes broken 5-hour / 7-day progress blocks.

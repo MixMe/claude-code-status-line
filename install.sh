@@ -37,79 +37,126 @@ VERSION=$(echo "$statusline_content" | grep '^VERSION=' | head -1 | cut -d'"' -f
 echo "claude-code-statusline v${VERSION}"
 echo ""
 
-# ── Time format ───────────────────────────────────────
+# ── Load existing config ─────────────────────────────
 time_format="12h"
+statusline_mode="full"
 if [ -f "$CONFIG_FILE" ]; then
     existing=$(grep '^TIME_FORMAT=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
     [ -n "$existing" ] && time_format="$existing"
+    existing=$(grep '^STATUSLINE_MODE=' "$CONFIG_FILE" 2>/dev/null | cut -d= -f2)
+    [ -n "$existing" ] && statusline_mode="$existing"
 fi
 
 # Interactive prompt (skip if no tty available)
 has_tty=false
 (echo "" > /dev/tty) 2>/dev/null && has_tty=true
 
-if $has_tty; then
-    # Interactive selector: arrow keys (↑/↓), j/k, 1/2 to switch, Enter to confirm.
-    # Options are redrawn in place using ANSI cursor-up escapes.
-    options_label=("12-hour  (2:34pm)" "24-hour  (14:34)")
-    options_value=("12h" "24h")
-    selected=0
-    [ "$time_format" = "24h" ] && selected=1
+# ── Generic interactive selector ─────────────────────
+# Usage: select_option <prompt> <initial_index> <label1> <value1> [<label2> <value2> ...]
+# Result is returned via global SELECTED_VALUE.
+#
+# Supported keys: ↑/↓/←/→ arrow keys, j/k (vim), 1..9 (direct pick),
+# Enter to confirm, q to abort with current selection.
+#
+# Integer `read -t 1` timeout is mandatory for bash 3.2 compatibility —
+# see the bugfix commit that preceded this refactor.
+select_option() {
+    local prompt="$1"; shift
+    local initial="$1"; shift
+    local labels=() values=()
+    while [ $# -ge 2 ]; do
+        labels+=("$1")
+        values+=("$2")
+        shift 2
+    done
+    local n=${#labels[@]}
+    local selected=$initial
+    [ -z "$selected" ] && selected=0
+    [ "$selected" -ge "$n" ] 2>/dev/null && selected=0
+    [ "$selected" -lt 0 ] 2>/dev/null && selected=0
 
-    render_options() {
+    _render_opts() {
         local i
-        for i in 0 1; do
+        for ((i=0; i<n; i++)); do
             if [ "$i" -eq "$selected" ]; then
-                printf '  \033[1;36m> %s\033[0m\n' "${options_label[$i]}" > /dev/tty
+                printf '  \033[1;36m> %s\033[0m\n' "${labels[$i]}" > /dev/tty
             else
-                printf '    \033[2m%s\033[0m\n' "${options_label[$i]}" > /dev/tty
+                printf '    \033[2m%s\033[0m\n' "${labels[$i]}" > /dev/tty
             fi
         done
     }
 
-    printf 'Select time format (use arrow keys or 1/2, Enter to confirm):\n' > /dev/tty
+    printf '%s\n' "$prompt" > /dev/tty
     # Hide cursor during selection; always restore on exit.
     printf '\033[?25l' > /dev/tty
     trap 'printf "\033[?25h" > /dev/tty' EXIT INT TERM
 
-    render_options
+    _render_opts
 
+    local key rest
     while true; do
         IFS= read -rsn1 key </dev/tty 2>/dev/null || { key=""; break; }
         case "$key" in
             $'\x1b')
-                # Escape sequence: read the remaining two bytes of an arrow key.
-                IFS= read -rsn2 -t 0.05 rest </dev/tty 2>/dev/null || rest=""
+                IFS= read -rsn2 -t 1 rest </dev/tty 2>/dev/null || rest=""
                 case "$rest" in
-                    '[A'|'[D') selected=0 ;;  # up / left
-                    '[B'|'[C') selected=1 ;;  # down / right
+                    '[A'|'[D') selected=$(( (selected - 1 + n) % n )) ;;  # up / left
+                    '[B'|'[C') selected=$(( (selected + 1) % n )) ;;      # down / right
                 esac
                 ;;
-            '1') selected=0 ;;
-            '2') selected=1 ;;
-            'k'|'K') selected=0 ;;
-            'j'|'J') selected=1 ;;
+            'k'|'K') selected=$(( (selected - 1 + n) % n )) ;;
+            'j'|'J') selected=$(( (selected + 1) % n )) ;;
+            [1-9])
+                local idx=$((key - 1))
+                [ "$idx" -lt "$n" ] && selected=$idx
+                ;;
             '')  break ;;  # Enter confirms
             'q'|'Q') break ;;
         esac
-        # Move cursor up 2 lines and redraw both options in place.
-        printf '\033[2A' > /dev/tty
-        render_options
+        # Move cursor up n lines and redraw options in place.
+        printf '\033[%dA' "$n" > /dev/tty
+        _render_opts
     done
 
     printf '\033[?25h' > /dev/tty
     trap - EXIT INT TERM
 
-    time_format="${options_value[$selected]}"
-fi
+    SELECTED_VALUE="${values[$selected]}"
+}
 
-if [ -f "$CONFIG_FILE" ] && grep -q '^TIME_FORMAT=' "$CONFIG_FILE" 2>/dev/null; then
-    tmp=$(mktemp)
-    sed "s/^TIME_FORMAT=.*/TIME_FORMAT=${time_format}/" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
-else
-    echo "TIME_FORMAT=${time_format}" >> "$CONFIG_FILE"
+config_set() {
+    local key="$1" value="$2"
+    if [ -f "$CONFIG_FILE" ] && grep -q "^${key}=" "$CONFIG_FILE" 2>/dev/null; then
+        local tmp; tmp=$(mktemp)
+        sed "s|^${key}=.*|${key}=${value}|" "$CONFIG_FILE" > "$tmp" && mv "$tmp" "$CONFIG_FILE"
+    else
+        echo "${key}=${value}" >> "$CONFIG_FILE"
+    fi
+}
+
+# ── Time format ───────────────────────────────────────
+if $has_tty; then
+    initial=0; [ "$time_format" = "24h" ] && initial=1
+    select_option "Select time format (arrow keys / j,k / 1,2, Enter to confirm):" \
+        "$initial" \
+        "12-hour  (2:34pm)" "12h" \
+        "24-hour  (14:34)"  "24h"
+    time_format="$SELECTED_VALUE"
 fi
+config_set TIME_FORMAT "$time_format"
 echo "Time format: ${time_format}"
+
+# ── Statusline mode ──────────────────────────────────
+if $has_tty; then
+    initial=0; [ "$statusline_mode" = "compact" ] && initial=1
+    select_option "Select statusline mode (arrow keys / j,k / 1,2, Enter to confirm):" \
+        "$initial" \
+        "full     (multi-line: context, rate-limit bars, system info)" "full" \
+        "compact  (single line: model, context, rate-limit remainders)" "compact"
+    statusline_mode="$SELECTED_VALUE"
+fi
+config_set STATUSLINE_MODE "$statusline_mode"
+echo "Statusline mode: ${statusline_mode}"
 
 # ── Clear stale caches ───────────────────────────────
 TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
