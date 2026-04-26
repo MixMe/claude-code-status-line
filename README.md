@@ -57,12 +57,19 @@ Also works in WSL or [Git Bash](https://git-scm.com/downloads/win) with the `cur
 | !perms | Warning when `bypassPermissions` is enabled |
 
 **Line 2 — Rate limits**
+
+One bar per category, dynamically discovered. The list always contains
+`5-hour` and `7-day` (read from stdin, always present); every other row
+is enumerated from `/api/oauth/usage` and rendered automatically — new
+categories Anthropic adds in the future appear without a code change.
+
 | Field | Description |
 |---|---|
 | 5-hour | 5-hour usage bar with reset time and countdown |
 | 7-day | 7-day usage bar with reset date and countdown |
-| sonnet | Sonnet weekly sub-limit (Max plan only, from `/api/oauth/usage`) |
-| extra | Monthly prepaid credits (shown only when enabled) |
+| sonnet / opus / ... | Per-model weekly sub-limits (Max plan only). Each `seven_day_*` field present in `/api/oauth/usage` becomes its own row, with the `seven_day_` prefix stripped. |
+| extra | Monthly prepaid credits, shown when `extra_usage.is_enabled` is true. |
+| codenames | Internal slots Anthropic ships before they have a public name (e.g. `omelette`, `iguana_necktie`) appear under their raw key so new limit types are visible the day they activate. |
 
 **Line 3 — System**
 | Field | Description |
@@ -84,7 +91,7 @@ Also works in WSL or [Git Bash](https://git-scm.com/downloads/win) with the `cur
 Two rendering modes, selected at install time and switchable via config:
 
 - **full** (default) — three-block multi-line layout: session info, rate-limit bars, system metrics. What you see in the "Line 1 / Line 2 / Line 3" tables above.
-- **compact** — single-line terse output: model, context (with absolute token counts), and rate-limit usage for 5-hour, 7-day, Sonnet and extra. Percentages use the **same semantic as full mode** (used, not remaining), so a given metric shows the exact same number in both layouts. Colour urgency tracks usage: green = low, red = near exhaustion.
+- **compact** — single-line terse output: model, context (with absolute token counts), and rate-limit usage for every category present in the API response (5-hour, 7-day, Sonnet, Opus, extra, plus any future or codename slots Anthropic ships). Percentages use the **same semantic as full mode** (used, not remaining), so a given metric shows the exact same number in both layouts. Colour urgency tracks usage: green = low, red = near exhaustion.
 
 Switch at any time by editing `~/.config/claude-statusline/config`:
 
@@ -98,12 +105,12 @@ or re-run the installer and pick interactively.
 
 The 5-hour and 7-day usage percentages are read directly from Claude Code's stdin JSON — **zero API calls**, always fresh on every render.
 
-The **Sonnet weekly sub-limit** and the **prepaid extra-credit balance** are both fetched from the `/api/oauth/usage` endpoint (they are not exposed via the statusline stdin payload) and cached together:
-- Single API call — both values come out of one response
+Every other rate-limit category (Sonnet weekly, Opus weekly, prepaid credits, future / codename slots) is fetched from the `/api/oauth/usage` endpoint and cached together:
+- Single API call — every category comes out of one response
 - Cached for 3 minutes
 - Backs off 5 min on rate limit (429), 10 min on auth error
 - Stale data shown with age indicator (max 10 min)
-- Sonnet line is hidden on non-Max plans (no `seven_day_sonnet` field)
+- Categories are enumerated dynamically: any non-null top-level field that matches one of the two known shapes (`{utilization, resets_at}` or `{is_enabled, monthly_limit, used_credits, currency}`) becomes its own row. Hardcoded "sonnet" / "extra" parsing was replaced in v1.5.0 so new limit types Anthropic ships are visible automatically.
 
 ## Customization
 
@@ -151,6 +158,12 @@ STATUSLINE_MODE=compact
 `TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
 
 ## Changelog
+
+### v1.5.0
+- **Dynamic rate-limit discovery**: every non-null top-level field in the `/api/oauth/usage` response is now rendered as its own bar, so categories the previous parser ignored (`seven_day_opus`, `seven_day_omelette`, internal codename slots like `iguana_necktie`) are visible the moment Anthropic activates them. New limit types added in the future no longer need a code change to appear in the statusline.
+- **Consistent label padding**: all rows in full mode now share the same label width — computed once across the whole set — so bars line up vertically regardless of which categories the API returned.
+- **Compact mode covers everything too**: the single-line layout iterates the same record list as full mode, so any newly-discovered category appears in compact rendering as well, not just full.
+- **Internals**: replaced the hardcoded `seven_day_sonnet` / `extra_usage` parser with a generic enumerator that classifies each field into one of two known shapes (`{utilization, resets_at}` for percentage bars, `{is_enabled, monthly_limit, used_credits, currency}` for credit bars). Anything else is silently skipped. The dropped `*_enabled` / `*_pct` / `*_used` / `*_limit` defaults are no longer referenced.
 
 ### v1.4.1
 - **Fix: compact mode rate-limit percentages now match full mode**. v1.4.0 displayed compact-mode 5-hour / 7-day / Sonnet as *remaining* (100 − used) while `ctx` and full-mode bars continued to show *used*, which made identical metrics read as different numbers depending on layout (e.g. 7-day at 82% used appeared as `7d 18%` in compact but `82%` in full). All percentages are now used, consistently, in both modes.
