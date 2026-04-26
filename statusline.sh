@@ -403,37 +403,26 @@ esac
 $thinking_on    && line1+=" ${cyan}thinking${reset}"
 $bypass_perms_on && line1+=" ${red}!permissions${reset}"
 
-# ── Rate limits: stdin-first (zero API calls) ────────
-rate_lines=""
+# ── Rate limits: collect every category into rate_records[] ─
+# stdin carries the standard 5-hour and 7-day slots; the API block below
+# adds dynamic discovery of every other limit Anthropic returns. Rendering
+# is deferred until both sources have populated the array, so that label
+# padding stays consistent across all rows regardless of which categories
+# were discovered. Each record is a single string with pipe-separated
+# fields:
+#     util|<label>|<pct>|<resets_epoch>
+#     credits|<label>|<pct>|<used>|<limit>|<currency>
+rate_records=()
 bar_width=10
 
 if [ -n "$five_pct" ]; then
     five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
-    five_reset=$(format_epoch_as_time "$five_resets_epoch" time)
-    five_left=$(format_epoch_time_left "$five_resets_epoch")
-    five_bar=$(build_bar "$five_pct_int" "$bar_width")
-    five_color=$(color_for_pct "$five_pct_int")
-
-    rate_lines+="${white}5-hour${reset}  ${five_bar} ${five_color}$(printf "%3d" "$five_pct_int")%${reset}"
-    if [ -n "$five_reset" ]; then
-        rate_lines+=" ${dim}-> ${reset}${white}${five_reset}${reset}"
-        [ -n "$five_left" ] && rate_lines+=" ${dim}(${five_left})${reset}"
-    fi
+    rate_records+=("util|5-hour|${five_pct_int}|${five_resets_epoch}")
 fi
 
 if [ -n "$seven_pct" ]; then
     seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
-    seven_reset=$(format_epoch_as_time "$seven_resets_epoch" datetime)
-    seven_left=$(format_epoch_time_left "$seven_resets_epoch")
-    seven_bar=$(build_bar "$seven_pct_int" "$bar_width")
-    seven_color=$(color_for_pct "$seven_pct_int")
-
-    [ -n "$rate_lines" ] && rate_lines+="\n"
-    rate_lines+="${white}7-day${reset}   ${seven_bar} ${seven_color}$(printf "%3d" "$seven_pct_int")%${reset}"
-    if [ -n "$seven_reset" ]; then
-        rate_lines+=" ${dim}-> ${reset}${white}${seven_reset}${reset}"
-        [ -n "$seven_left" ] && rate_lines+=" ${dim}(${seven_left})${reset}"
-    fi
+    rate_records+=("util|7-day|${seven_pct_int}|${seven_resets_epoch}")
 fi
 
 # ── Extra usage: API with rate-limit backoff (cached 180s) ─
@@ -476,11 +465,6 @@ fi
 
 extra_data=""
 needs_extra_refresh=true
-# Defaults so downstream code can reference these unconditionally even
-# when the /api/oauth/usage fetch fails or the response has no matching
-# sections (non-Max plan, no prepaid credits, etc.).
-sonnet_enabled=false sonnet_pct=0 sonnet_resets_epoch=""
-extra_enabled=false extra_pct=0 extra_used="0.00" extra_limit="0.00"
 if [ -f "$extra_cache" ]; then
     extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
     extra_age=$(( $(date +%s) - extra_mtime ))
@@ -527,66 +511,114 @@ if $needs_extra_refresh && ! $locked; then
 fi
 
 if [ -n "$extra_data" ]; then
-    # Single node invocation parses BOTH the Sonnet weekly sub-limit
-    # (seven_day_sonnet — Max plan only) AND the prepaid extra_usage block
-    # from the same cached /api/oauth/usage response. Consolidating what
-    # used to be two separate node forks roughly halves node spawn overhead
-    # on every statusline render.
-    eval "$(echo "$extra_data" | node -e "
+    # Dynamic discovery: enumerate every non-null top-level field in
+    # /api/oauth/usage and classify each into one of two known shapes.
+    # Anything else is silently skipped. five_hour and seven_day are
+    # excluded here because both are already populated from stdin above
+    # — including them would render duplicate rows. New limit types added
+    # by Anthropic in the future appear in the statusline automatically
+    # without code changes; this replaced a hardcoded parser that ignored
+    # seven_day_opus, seven_day_omelette, and similar codename slots
+    # entirely.
+    api_records=$(echo "$extra_data" | node -e "
 let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
   try{
     const j=JSON.parse(d);
-    const son=j.seven_day_sonnet;
-    if(son){
-      console.log('sonnet_enabled=true');
-      console.log('sonnet_pct='+Math.round(son.utilization??0));
-      const r=son.resets_at?Math.floor(new Date(son.resets_at).getTime()/1000):'';
-      console.log('sonnet_resets_epoch='+r);
-    }else{console.log('sonnet_enabled=false')}
-    const ex=j.extra_usage;
-    if(ex&&ex.is_enabled){
-      console.log('extra_enabled=true');
-      console.log('extra_pct='+Math.round(ex.utilization??0));
-      console.log('extra_used='+(ex.used_credits/100).toFixed(2));
-      console.log('extra_limit='+(ex.monthly_limit/100).toFixed(2));
-    }else{console.log('extra_enabled=false')}
-  }catch{console.log('sonnet_enabled=false');console.log('extra_enabled=false')}
-})" 2>/dev/null)"
-
-    if [ "$sonnet_enabled" = "true" ]; then
-        sonnet_reset=$(format_epoch_as_time "$sonnet_resets_epoch" datetime)
-        sonnet_left=$(format_epoch_time_left "$sonnet_resets_epoch")
-        sonnet_bar=$(build_bar "$sonnet_pct" "$bar_width")
-        sonnet_color=$(color_for_pct "$sonnet_pct")
-
-        [ -n "$rate_lines" ] && rate_lines+="\n"
-        rate_lines+="${white}sonnet${reset}  ${sonnet_bar} ${sonnet_color}$(printf "%3d" "$sonnet_pct")%${reset}"
-        if [ -n "$sonnet_reset" ]; then
-            rate_lines+=" ${dim}-> ${reset}${white}${sonnet_reset}${reset}"
-            [ -n "$sonnet_left" ] && rate_lines+=" ${dim}(${sonnet_left})${reset}"
-        fi
+    const skip=new Set(['five_hour','seven_day']);
+    for(const [key,val] of Object.entries(j)){
+      if(skip.has(key)||val==null||typeof val!=='object')continue;
+      // Strip the seven_day_ prefix so 'seven_day_opus' renders as 'opus';
+      // map the special-cased extra_usage to the historical 'extra' label.
+      const label=key==='extra_usage'?'extra':key.replace(/^seven_day_/,'');
+      // Pattern A — utilization + resets_at (sonnet/opus/cowork/...).
+      if(typeof val.utilization==='number' && 'resets_at' in val){
+        const pct=Math.round(val.utilization||0);
+        const r=val.resets_at?Math.floor(new Date(val.resets_at).getTime()/1000):'';
+        console.log('util|'+label+'|'+pct+'|'+r);
+      }
+      // Pattern B — prepaid credits (extra_usage shape).
+      else if(val.is_enabled===true && typeof val.monthly_limit==='number'){
+        const pct=Math.round(val.utilization||0);
+        const used=(val.used_credits/100).toFixed(2);
+        const lim=(val.monthly_limit/100).toFixed(2);
+        const cur=val.currency||'USD';
+        console.log('credits|'+label+'|'+pct+'|'+used+'|'+lim+'|'+cur);
+      }
+    }
+  }catch(e){}
+})" 2>/dev/null)
+    if [ -n "$api_records" ]; then
+        while IFS= read -r api_line; do
+            [ -n "$api_line" ] && rate_records+=("$api_line")
+        done <<EOF
+$api_records
+EOF
     fi
+fi
 
-    if [ "$extra_enabled" = "true" ]; then
-        extra_bar=$(build_bar "$extra_pct" "$bar_width")
-        extra_color=$(color_for_pct "$extra_pct")
+# ── Render rate_records[] → rate_lines (full mode) ────────
+rate_lines=""
+if [ "${#rate_records[@]}" -gt 0 ]; then
+    # Compute label padding once across every row so bars line up
+    # vertically regardless of which categories the API returned.
+    label_pad=5
+    for rec in "${rate_records[@]}"; do
+        rec_lbl=${rec#*|}; rec_lbl=${rec_lbl%%|*}
+        rec_n=${#rec_lbl}
+        [ "$rec_n" -gt "$label_pad" ] && label_pad="$rec_n"
+    done
 
-        extra_reset=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-        [ -z "$extra_reset" ] && extra_reset=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-
-        [ -n "$rate_lines" ] && rate_lines+="\n"
-        rate_lines+="${white}extra${reset}  ${extra_bar} ${extra_color}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
-        [ -n "$extra_reset" ] && rate_lines+=" ${dim}-> ${reset}${white}${extra_reset}${reset}"
-
-        if [ -f "$extra_cache" ]; then
-            extra_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
-            extra_age=$(( $(date +%s) - extra_mtime ))
-            if [ "$extra_age" -gt "$extra_max_age" ]; then
-                stale_age=$(format_age "$extra_mtime")
-                rate_lines+=" ${dim}(${stale_age} ago)${reset}"
-            fi
-        fi
-    fi
+    for rec in "${rate_records[@]}"; do
+        IFS='|' read -r kind lbl f3 f4 f5 f6 <<< "$rec"
+        case "$kind" in
+            util)
+                pct="$f3"; epoch="$f4"
+                bar=$(build_bar "$pct" "$bar_width")
+                color=$(color_for_pct "$pct")
+                lbl_padded=$(printf "%-${label_pad}s" "$lbl")
+                [ -n "$rate_lines" ] && rate_lines+="\n"
+                rate_lines+="${white}${lbl_padded}${reset}  ${bar} ${color}$(printf "%3d" "$pct")%${reset}"
+                if [ -n "$epoch" ]; then
+                    # 5-hour resets within the day so a bare time looks fine;
+                    # everything else can span days, so include the date.
+                    if [ "$lbl" = "5-hour" ]; then
+                        reset_str=$(format_epoch_as_time "$epoch" time)
+                    else
+                        reset_str=$(format_epoch_as_time "$epoch" datetime)
+                    fi
+                    [ -n "$reset_str" ] && rate_lines+=" ${dim}-> ${reset}${white}${reset_str}${reset}"
+                    time_left=$(format_epoch_time_left "$epoch")
+                    [ -n "$time_left" ] && rate_lines+=" ${dim}(${time_left})${reset}"
+                fi
+                ;;
+            credits)
+                pct="$f3"; used="$f4"; lim="$f5"; cur="$f6"
+                bar=$(build_bar "$pct" "$bar_width")
+                color=$(color_for_pct "$pct")
+                lbl_padded=$(printf "%-${label_pad}s" "$lbl")
+                # USD displays as $; other currencies print the code.
+                if [ "$cur" = "USD" ]; then
+                    sym='$'
+                else
+                    sym="${cur} "
+                fi
+                # Prepaid credits reset on the 1st of the next month.
+                reset_str=$(date -v+1m -v1d +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                [ -z "$reset_str" ] && reset_str=$(date -d "$(date +%Y-%m-01) +1 month" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                [ -n "$rate_lines" ] && rate_lines+="\n"
+                rate_lines+="${white}${lbl_padded}${reset}  ${bar} ${color}${sym}${used}${dim}/${reset}${white}${sym}${lim}${reset}"
+                [ -n "$reset_str" ] && rate_lines+=" ${dim}-> ${reset}${white}${reset_str}${reset}"
+                if [ -f "$extra_cache" ]; then
+                    cache_mtime=$(stat -f %m "$extra_cache" 2>/dev/null || stat -c %Y "$extra_cache" 2>/dev/null)
+                    cache_age=$(( $(date +%s) - cache_mtime ))
+                    if [ "$cache_age" -gt "$extra_max_age" ]; then
+                        stale_age=$(format_age "$cache_mtime")
+                        rate_lines+=" ${dim}(${stale_age} ago)${reset}"
+                    fi
+                fi
+                ;;
+        esac
+    done
 fi
 
 # ── Update check (cached 24h) ────────────────────────
@@ -638,38 +670,40 @@ if [ "$statusline_mode" = "compact" ]; then
     # All percentages are shown as USED — same semantic as full mode — so
     # a given metric shows the exact same number in both layouts. Colour
     # urgency still tracks usage (green = low, red = near exhaustion).
-    # All *_enabled / *_pct / *_used / *_limit variables are safely
-    # pre-initialized near the top of this script.
+    # rate_records[] is populated above from stdin (5-hour, 7-day) and
+    # /api/oauth/usage (sonnet, opus, omelette, extra, ...) — every row
+    # discovered in the API response is rendered here too, so new limit
+    # types appear in compact mode without code changes.
     compact_line="${model_color}${model_name}${reset}"
     compact_line+="${sep}${ctx_color}ctx ${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
 
-    if [ -n "$five_pct" ]; then
-        five_pct_int=$(printf "%.0f" "$five_pct" 2>/dev/null || echo "0")
-        five_color=$(color_for_pct "$five_pct_int")
-        compact_line+="${sep}${five_color}5h ${five_pct_int}%${reset}"
-        five_left=$(format_epoch_time_left "$five_resets_epoch")
-        [ -n "$five_left" ] && compact_line+=" ${dim}${five_left}${reset}"
-    fi
-
-    if [ -n "$seven_pct" ]; then
-        seven_pct_int=$(printf "%.0f" "$seven_pct" 2>/dev/null || echo "0")
-        seven_color=$(color_for_pct "$seven_pct_int")
-        compact_line+="${sep}${seven_color}7d ${seven_pct_int}%${reset}"
-        seven_left=$(format_epoch_time_left "$seven_resets_epoch")
-        [ -n "$seven_left" ] && compact_line+=" ${dim}${seven_left}${reset}"
-    fi
-
-    if [ "$sonnet_enabled" = "true" ]; then
-        sonnet_color=$(color_for_pct "$sonnet_pct")
-        compact_line+="${sep}${sonnet_color}sonnet ${sonnet_pct}%${reset}"
-        sonnet_left=$(format_epoch_time_left "$sonnet_resets_epoch")
-        [ -n "$sonnet_left" ] && compact_line+=" ${dim}${sonnet_left}${reset}"
-    fi
-
-    if [ "$extra_enabled" = "true" ]; then
-        extra_color=$(color_for_pct "$extra_pct")
-        compact_line+="${sep}${white}extra${reset} ${extra_color}\$${extra_used}${dim}/${reset}${white}\$${extra_limit}${reset}"
-    fi
+    for rec in "${rate_records[@]}"; do
+        IFS='|' read -r kind lbl f3 f4 f5 f6 <<< "$rec"
+        # Tighten labels for the well-known long ones; everything else
+        # (sonnet / opus / omelette / extra / future codenames) stays as-is.
+        case "$lbl" in
+            5-hour) clbl="5h" ;;
+            7-day)  clbl="7d" ;;
+            *)      clbl="$lbl" ;;
+        esac
+        case "$kind" in
+            util)
+                pct="$f3"; epoch="$f4"
+                color=$(color_for_pct "$pct")
+                compact_line+="${sep}${color}${clbl} ${pct}%${reset}"
+                if [ -n "$epoch" ]; then
+                    time_left=$(format_epoch_time_left "$epoch")
+                    [ -n "$time_left" ] && compact_line+=" ${dim}${time_left}${reset}"
+                fi
+                ;;
+            credits)
+                pct="$f3"; used="$f4"; lim="$f5"; cur="$f6"
+                color=$(color_for_pct "$pct")
+                if [ "$cur" = "USD" ]; then sym='$'; else sym="${cur} "; fi
+                compact_line+="${sep}${white}${clbl}${reset} ${color}${sym}${used}${dim}/${reset}${white}${sym}${lim}${reset}"
+                ;;
+        esac
+    done
 
     printf "%b" "$compact_line"
     exit 0
