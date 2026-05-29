@@ -17,8 +17,8 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
-# claude-code-statusline v1.4.1
-VERSION="1.5.0"
+# claude-code-statusline v1.5.1
+VERSION="1.5.1"
 REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
@@ -159,6 +159,7 @@ let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
       console.log(k+'='+String(val));
     };
     v('model_name',     d.model?.display_name ?? 'Claude');
+    v('session_id',     d.session_id ?? '');
     v('ctx_size',       d.context_window?.context_window_size ?? 200000);
     v('input_tokens',   d.context_window?.current_usage?.input_tokens ?? 0);
     v('cache_create',   d.context_window?.current_usage?.cache_creation_input_tokens ?? 0);
@@ -185,7 +186,7 @@ mkdir -p "$CACHE_DIR"
 
 # ── Parse stdin + settings in one node call ──────────
 # Defaults (shellcheck SC2154: variables assigned via declare)
-model_name="Claude" ctx_size=200000 input_tokens=0 cache_create=0 cache_read=0
+model_name="Claude" session_id="" ctx_size=200000 input_tokens=0 cache_create=0 cache_read=0
 ctx_pct=0 exceeds_200k=false total_duration_ms="" cwd=""
 five_pct="" five_resets_epoch="" seven_pct="" seven_resets_epoch=""
 effort="default" thinking_setting="" bypass_perms=false
@@ -375,6 +376,7 @@ fi
 ctx_color=$(color_for_pct "$ctx_pct")
 
 line1="${model_color}${model_name}${reset}"
+[ -n "$session_id" ] && line1+=" ${dim}chat:${session_id}${reset}"
 line1+="${sep}"
 line1+="${ctx_color}${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
 [ -n "$cache_hit_str" ] && line1+=" ${cache_hit_str}"
@@ -675,6 +677,7 @@ if [ "$statusline_mode" = "compact" ]; then
     # discovered in the API response is rendered here too, so new limit
     # types appear in compact mode without code changes.
     compact_line="${model_color}${model_name}${reset}"
+    [ -n "$session_id" ] && compact_line+=" ${dim}chat:${session_id}${reset}"
     compact_line+="${sep}${ctx_color}ctx ${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
 
     for rec in "${rate_records[@]}"; do
