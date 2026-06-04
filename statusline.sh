@@ -86,15 +86,30 @@ format_epoch_as_time() {
     local style="${2:-time}"
     [ -z "$epoch" ] || [ "$epoch" = "null" ] || [ "$epoch" = "0" ] && return
 
+    # Time-of-day component honours TIME_FORMAT (a global set from the config
+    # file before this function is ever called): 24h -> %H:%M, otherwise the
+    # 12h path -> %l:%M%p with lowercase am/pm normalisation. Without this
+    # branch the rate-limit reset markers always rendered 12h regardless of
+    # the user's setting, while the standalone clock honoured it.
     local result=""
     case "$style" in
         time)
-            result=$(date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //; s/\.//g')
+            if [ "$time_format" = "24h" ]; then
+                result=$(date -j -r "$epoch" +"%H:%M" 2>/dev/null)
+                [ -z "$result" ] && result=$(date -d "@$epoch" +"%H:%M" 2>/dev/null)
+            else
+                result=$(date -j -r "$epoch" +"%l:%M%p" 2>/dev/null | sed 's/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
+                [ -z "$result" ] && result=$(date -d "@$epoch" +"%l:%M%P" 2>/dev/null | sed 's/^ //; s/\.//g')
+            fi
             ;;
         datetime)
-            result=$(date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
-            [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g')
+            if [ "$time_format" = "24h" ]; then
+                result=$(date -j -r "$epoch" +"%b %-d, %H:%M" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+                [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d, %H:%M" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            else
+                result=$(date -j -r "$epoch" +"%b %-d, %l:%M%p" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g' | tr '[:upper:]' '[:lower:]')
+                [ -z "$result" ] && result=$(date -d "@$epoch" +"%b %-d, %l:%M%P" 2>/dev/null | sed 's/  / /g; s/^ //; s/\.//g')
+            fi
             ;;
         date)
             result=$(date -j -r "$epoch" +"%b %-d" 2>/dev/null | tr '[:upper:]' '[:lower:]')
