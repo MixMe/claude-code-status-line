@@ -7,9 +7,22 @@ SETTINGS="$HOME/.claude/settings.json"
 CONFIG_DIR="$HOME/.config/claude-statusline"
 CONFIG_FILE="$CONFIG_DIR/config"
 
+have() { command -v "$1" >/dev/null 2>&1; }
+
 # ── Detect local vs remote mode ──────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}" 2>/dev/null)" && pwd 2>/dev/null)" || SCRIPT_DIR=""
 LOCAL_SCRIPT="$SCRIPT_DIR/statusline.sh"
+
+# ── Uninstall passthrough ────────────────────────────
+# `install.sh --uninstall` runs the local uninstaller if present, else fetches
+# it from the repo — so the one-line curl installer has a symmetric remover.
+if [ "$1" = "--uninstall" ] || [ "$1" = "uninstall" ]; then
+    if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/uninstall.sh" ]; then
+        exec bash "$SCRIPT_DIR/uninstall.sh"
+    else
+        exec bash -c "$(curl -fsSL "$REPO_RAW/uninstall.sh")"
+    fi
+fi
 
 fetch_statusline() {
     if [ -n "$SCRIPT_DIR" ] && [ -f "$LOCAL_SCRIPT" ]; then
@@ -163,26 +176,58 @@ TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
 rm -f "$TMPDIR/claude/statusline-usage-cache.json" "$TMPDIR/claude/statusline-extra-cache.json" \
       "$TMPDIR/claude/statusline-extra.lock" "$TMPDIR/claude/statusline-update-cache" 2>/dev/null
 
-# ── Patch settings.json ───────────────────────────────
-node -e "
+# ── Patch settings.json (portable: jq > python3 > node) ──
+# The command stores a literal $HOME so Claude Code's shell expands it at
+# runtime. Whichever JSON tool is present is used; if none, we print the
+# snippet for the user to paste manually (no hard dependency on Node).
+SL_CMD='bash "$HOME/.claude/statusline.sh"'
+
+if have jq; then
+    if [ -f "$SETTINGS" ] && jq -e '.statusLine' "$SETTINGS" >/dev/null 2>&1; then
+        echo "statusLine already configured"
+    elif [ -f "$SETTINGS" ]; then
+        tmp=$(mktemp)
+        jq --arg c "$SL_CMD" '.statusLine = {type:"command", command:$c}' "$SETTINGS" > "$tmp" && mv "$tmp" "$SETTINGS"
+        echo "Updated $SETTINGS"
+    else
+        jq -n --arg c "$SL_CMD" '{statusLine:{type:"command",command:$c}}' > "$SETTINGS"
+        echo "Created $SETTINGS"
+    fi
+elif have python3; then
+    python3 -c '
+import json, sys, os
+path, cmd = sys.argv[1], sys.argv[2]
+existed = os.path.exists(path)
+try:
+    s = json.load(open(path)) if existed else {}
+except Exception:
+    s = {}
+if not isinstance(s, dict): s = {}
+if "statusLine" in s:
+    print("statusLine already configured")
+else:
+    s["statusLine"] = {"type": "command", "command": cmd}
+    open(path, "w").write(json.dumps(s, indent=2) + "\n")
+    print(("Updated " if existed else "Created ") + path)
+' "$SETTINGS" "$SL_CMD"
+elif have node; then
+    node -e "
 const fs=require('fs');
-const path='$SETTINGS';
-const sl={type:'command',command:'bash \"\$HOME/.claude/statusline.sh\"'};
-let settings={};
-let action='';
+const path=process.argv[1];
+const sl={type:'command',command:process.argv[2]};
+let settings={}, action='';
 if(fs.existsSync(path)){
-  settings=JSON.parse(fs.readFileSync(path,'utf8'));
-  if(settings.statusLine){action='exists'}
-  else{settings.statusLine=sl;action='updated'}
-}else{
-  settings={statusLine:sl};action='created';
-}
-if(action!=='exists'){
-  fs.writeFileSync(path,JSON.stringify(settings,null,2)+'\n');
-}
-console.log(action==='exists'?'statusLine already configured':
-  action==='created'?'Created '+path:'Updated '+path);
-" 2>/dev/null
+  try{settings=JSON.parse(fs.readFileSync(path,'utf8'))}catch{settings={}}
+  if(settings.statusLine){action='exists'} else {settings.statusLine=sl;action='updated'}
+}else{ settings={statusLine:sl}; action='created'; }
+if(action!=='exists') fs.writeFileSync(path,JSON.stringify(settings,null,2)+'\n');
+console.log(action==='exists'?'statusLine already configured':action==='created'?'Created '+path:'Updated '+path);
+" "$SETTINGS" "$SL_CMD" 2>/dev/null
+else
+    echo "No jq / python3 / node found — could not auto-configure $SETTINGS."
+    echo "Add this key manually to $SETTINGS:"
+    echo "  \"statusLine\": { \"type\": \"command\", \"command\": \"$SL_CMD\" }"
+fi
 
 echo ""
 echo "Installed v${VERSION}. Restart Claude Code to apply."

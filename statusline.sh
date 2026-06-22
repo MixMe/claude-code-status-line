@@ -17,8 +17,8 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
-# claude-code-statusline v1.5.2
-VERSION="1.5.2"
+# claude-code-statusline v1.6.0
+VERSION="1.6.0"
 REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
@@ -158,17 +158,132 @@ format_age() {
     fi
 }
 
-# Shell-safe value escaper for node output
-node_parse() {
-    echo "$input" | node -e "
-const fs=require('fs'),p=require('path');
+# ── JSON parsing backend ──────────────────────────────
+# Claude Code's native install no longer bundles Node, and Homebrew's
+# versioned `node@NN` formulae are keg-only (never linked onto PATH). A hard
+# dependency on `node` therefore silently breaks the statusline the moment
+# Node leaves PATH (the v1.5.x "Claude | ctx 0% (0/200k)" regression). We
+# detect the best available JSON tool at runtime and route every parse
+# through it:
+#   jq      — purpose-built for JSON, first choice when present
+#   python3 — ubiquitous on Linux, common on dev macOS (Xcode CLT / brew)
+#   node    — the historical backend, still fine when installed
+#   awk     — universal last resort; ALWAYS present wherever bash runs, but
+#             only powers the critical stdin fields (model, context, 5h/7d).
+#             The nested/dynamic /api/oauth/usage extras need a real JSON
+#             parser, so prepaid-credit / per-model rows are omitted under awk.
+have() { command -v "$1" >/dev/null 2>&1; }
+
+JSON_BACKEND="awk"
+if   have jq;      then JSON_BACKEND="jq"
+elif have python3; then JSON_BACKEND="python3"
+elif have node;    then JSON_BACKEND="node"
+fi
+
+# Flat single-field extractors for two fixed-shape blobs (OAuth credential
+# JSON, GitHub release JSON). The target value is always a quote-delimited
+# string with no embedded quotes, so a portable grep+sed pass is correct
+# everywhere and needs no JSON runtime.
+extract_access_token() {
+    grep -oE '"accessToken"[[:space:]]*:[[:space:]]*"[^"]+"' \
+        | head -1 | sed -E 's/.*:[[:space:]]*"(.*)"$/\1/'
+}
+extract_tag() {
+    grep -oE '"tag_name"[[:space:]]*:[[:space:]]*"[^"]*"' \
+        | head -1 | sed -E 's/.*:[[:space:]]*"(.*)"$/\1/'
+}
+
+# ── stdin + settings parse (dispatched to the detected backend) ──
+# Stdin (the Claude Code status payload) and settings.json are parsed
+# SEPARATELY so a malformed settings.json can never blank out the live
+# status fields — at worst effort/thinking/bypass fall back to defaults.
+_parse_input_jq() {
+    jq -r '
+      "model_name=" + ((.model.display_name) // "Claude"),
+      "session_id=" + ((.session_id // "") | tostring),
+      "ctx_size=" + ((.context_window.context_window_size // 200000) | tostring),
+      "input_tokens=" + ((.context_window.current_usage.input_tokens // 0) | tostring),
+      "cache_create=" + ((.context_window.current_usage.cache_creation_input_tokens // 0) | tostring),
+      "cache_read=" + ((.context_window.current_usage.cache_read_input_tokens // 0) | tostring),
+      "ctx_pct=" + ((.context_window.used_percentage // 0) | tostring),
+      "exceeds_200k=" + ((.exceeds_200k_tokens // false) | tostring),
+      "total_duration_ms=" + ((.cost.total_duration_ms // "") | tostring),
+      "cwd=" + ((.workspace.current_dir // .cwd // "") | tostring),
+      "five_pct=" + ((.rate_limits.five_hour.used_percentage // "") | tostring),
+      "five_resets_epoch=" + ((.rate_limits.five_hour.resets_at // "") | tostring),
+      "seven_pct=" + ((.rate_limits.seven_day.used_percentage // "") | tostring),
+      "seven_resets_epoch=" + ((.rate_limits.seven_day.resets_at // "") | tostring)
+    ' 2>/dev/null
+}
+
+_parse_settings_jq() {
+    printf '%s' "$1" | jq -r '
+      "effort=" + ((.effortLevel // "default") | tostring),
+      "thinking_setting=" + ((.thinking // "") | tostring),
+      "bypass_perms=" + ((.bypassPermissions // false) | tostring)
+    ' 2>/dev/null
+}
+
+_parse_input_python() {
+    python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict): d = {}
+def g(o, *path):
+    for k in path:
+        if not isinstance(o, dict): return None
+        o = o.get(k)
+        if o is None: return None
+    return o
+def emit(k, v, default=""):
+    if v is None: v = default
+    if v is True: v = "true"
+    elif v is False: v = "false"
+    print(str(k) + "=" + str(v))
+emit("model_name", g(d,"model","display_name") or "Claude")
+emit("session_id", g(d,"session_id"))
+emit("ctx_size", g(d,"context_window","context_window_size"), 200000)
+emit("input_tokens", g(d,"context_window","current_usage","input_tokens"), 0)
+emit("cache_create", g(d,"context_window","current_usage","cache_creation_input_tokens"), 0)
+emit("cache_read", g(d,"context_window","current_usage","cache_read_input_tokens"), 0)
+emit("ctx_pct", g(d,"context_window","used_percentage"), 0)
+emit("exceeds_200k", g(d,"exceeds_200k_tokens"), "false")
+emit("total_duration_ms", g(d,"cost","total_duration_ms"))
+emit("cwd", g(d,"workspace","current_dir") or g(d,"cwd"))
+emit("five_pct", g(d,"rate_limits","five_hour","used_percentage"))
+emit("five_resets_epoch", g(d,"rate_limits","five_hour","resets_at"))
+emit("seven_pct", g(d,"rate_limits","seven_day","used_percentage"))
+emit("seven_resets_epoch", g(d,"rate_limits","seven_day","resets_at"))
+' 2>/dev/null
+}
+
+_parse_settings_python() {
+    printf '%s' "$1" | python3 -c '
+import sys, json
+try:
+    s = json.load(sys.stdin)
+except Exception:
+    s = {}
+if not isinstance(s, dict): s = {}
+def emit(k, v):
+    if v is None: v = ""
+    if v is True: v = "true"
+    elif v is False: v = "false"
+    print(str(k) + "=" + str(v))
+emit("effort", s.get("effortLevel") or "default")
+emit("thinking_setting", s.get("thinking") or "")
+emit("bypass_perms", bool(s.get("bypassPermissions")))
+' 2>/dev/null
+}
+
+_parse_input_node() {
+    node -e "
 let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
   try{
     const d=JSON.parse(buf);
-    const home=process.env.HOME||process.env.USERPROFILE||'';
-    const sf=p.join(home,'.claude','settings.json');
-    let s={};
-    try{s=JSON.parse(fs.readFileSync(sf,'utf8'))}catch{}
     const v=(k,val)=>{
       if(val===undefined||val===null) val='';
       console.log(k+'='+String(val));
@@ -187,12 +302,207 @@ let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
     v('five_resets_epoch', d.rate_limits?.five_hour?.resets_at ?? '');
     v('seven_pct',      d.rate_limits?.seven_day?.used_percentage ?? '');
     v('seven_resets_epoch', d.rate_limits?.seven_day?.resets_at ?? '');
-    v('effort',         s.effortLevel ?? 'default');
-    v('thinking_setting', s.thinking ?? '');
-    v('bypass_perms',   s.bypassPermissions ?? false);
   }catch(e){process.stderr.write(e.message)}
 });
-"
+" 2>/dev/null
+}
+
+_parse_settings_node() {
+    printf '%s' "$1" | node -e "
+let buf='';process.stdin.on('data',c=>buf+=c);process.stdin.on('end',()=>{
+  try{
+    const s=JSON.parse(buf);
+    const v=(k,val)=>{ if(val===undefined||val===null) val=''; console.log(k+'='+String(val)); };
+    v('effort',           s.effortLevel ?? 'default');
+    v('thinking_setting', s.thinking ?? '');
+    v('bypass_perms',     s.bypassPermissions ?? false);
+  }catch(e){}
+});
+" 2>/dev/null
+}
+
+# Universal last resort. Parses only the critical stdin fields. Duplicate
+# keys (used_percentage / resets_at appear under both five_hour and
+# seven_day) are disambiguated by section: ctx % is taken from the slice
+# before "rate_limits"; the 5h/7d values from a window anchored at each
+# section key. Assumes Claude Code's compact (space-free) JSON.
+_parse_input_awk() {
+    awk '
+    { J = J $0 }
+    function strval(s, key,   re, rest) {
+        re = "\"" key "\":\""
+        if (!match(s, re)) return ""
+        rest = substr(s, RSTART + RLENGTH)
+        match(rest, /[^"]*/)
+        return substr(rest, 1, RLENGTH)
+    }
+    function numval(s, key,   re, rest) {
+        re = "\"" key "\":"
+        if (!match(s, re)) return ""
+        rest = substr(s, RSTART + RLENGTH)
+        sub(/^[ \t]+/, "", rest)
+        if (match(rest, /^-?[0-9]+(\.[0-9]+)?/)) return substr(rest, 1, RLENGTH)
+        return ""
+    }
+    function boolval(s, key,   re, rest) {
+        re = "\"" key "\":"
+        if (!match(s, re)) return ""
+        rest = substr(s, RSTART + RLENGTH)
+        sub(/^[ \t]+/, "", rest)
+        if (rest ~ /^true/) return "true"
+        if (rest ~ /^false/) return "false"
+        return ""
+    }
+    END {
+        model = strval(J, "display_name"); if (model == "") model = "Claude"
+        ctxsize = numval(J, "context_window_size"); if (ctxsize == "") ctxsize = "200000"
+        it = numval(J, "input_tokens"); if (it == "") it = "0"
+        cc = numval(J, "cache_creation_input_tokens"); if (cc == "") cc = "0"
+        cr = numval(J, "cache_read_input_tokens"); if (cr == "") cr = "0"
+        rl = index(J, "\"rate_limits\"")
+        head = (rl > 0) ? substr(J, 1, rl) : J
+        cp = numval(head, "used_percentage"); if (cp == "") cp = "0"
+        ex = boolval(J, "exceeds_200k_tokens"); if (ex == "") ex = "false"
+        td = numval(J, "total_duration_ms")
+        cwd = strval(J, "current_dir"); if (cwd == "") cwd = strval(J, "cwd")
+        fh = index(J, "\"five_hour\""); fseg = (fh > 0) ? substr(J, fh, 300) : ""
+        fp = numval(fseg, "used_percentage"); fr = numval(fseg, "resets_at")
+        sd = index(J, "\"seven_day\""); sseg = (sd > 0) ? substr(J, sd, 300) : ""
+        sp = numval(sseg, "used_percentage"); sr = numval(sseg, "resets_at")
+        print "model_name=" model
+        print "session_id=" strval(J, "session_id")
+        print "ctx_size=" ctxsize
+        print "input_tokens=" it
+        print "cache_create=" cc
+        print "cache_read=" cr
+        print "ctx_pct=" cp
+        print "exceeds_200k=" ex
+        print "total_duration_ms=" td
+        print "cwd=" cwd
+        print "five_pct=" fp
+        print "five_resets_epoch=" fr
+        print "seven_pct=" sp
+        print "seven_resets_epoch=" sr
+    }
+    ' 2>/dev/null
+}
+
+_parse_settings_grep() {
+    local sf="$1" e t b
+    [ -f "$sf" ] || return 0
+    e=$(grep -oE '"effortLevel"[[:space:]]*:[[:space:]]*"[^"]*"' "$sf" | head -1 | sed -E 's/.*:[[:space:]]*"(.*)"$/\1/')
+    [ -n "$e" ] && echo "effort=$e"
+    t=$(grep -oE '"thinking"[[:space:]]*:[[:space:]]*("[^"]*"|true|false)' "$sf" | head -1 | sed -E 's/.*:[[:space:]]*//; s/"//g')
+    [ -n "$t" ] && echo "thinking_setting=$t"
+    b=$(grep -oE '"bypassPermissions"[[:space:]]*:[[:space:]]*(true|false)' "$sf" | head -1 | sed -E 's/.*:[[:space:]]*//')
+    [ -n "$b" ] && echo "bypass_perms=$b"
+}
+
+# Name kept (`node_parse`) to minimise churn at the single call site below.
+node_parse() {
+    local sf="$HOME/.claude/settings.json"
+    local sj='{}'
+    [ -f "$sf" ] && sj=$(cat "$sf" 2>/dev/null)
+    case "$JSON_BACKEND" in
+        jq)
+            printf '%s' "$input" | _parse_input_jq
+            _parse_settings_jq "$sj"
+            ;;
+        python3)
+            printf '%s' "$input" | _parse_input_python
+            _parse_settings_python "$sj"
+            ;;
+        node)
+            printf '%s' "$input" | _parse_input_node
+            _parse_settings_node "$sj"
+            ;;
+        *)
+            printf '%s' "$input" | _parse_input_awk
+            _parse_settings_grep "$sf"
+            ;;
+    esac
+}
+
+# ── /api/oauth/usage dynamic discovery (needs a real JSON parser) ──
+# Emits the same pipe-delimited records the renderer consumes. Credit amounts
+# are emitted as RAW integer cents (used_credits / monthly_limit); the
+# renderer divides by 100 and formats to 2 decimals, so every backend stays
+# trivial and the formatting lives in one place.
+_parse_usage() {
+    case "$JSON_BACKEND" in
+        jq)
+            jq -r '
+              to_entries[]
+              | select(.key != "five_hour" and .key != "seven_day")
+              | select((.value | type) == "object")
+              | .key as $k | .value as $v
+              | (if $k == "extra_usage" then "extra" else ($k | sub("^seven_day_"; "")) end) as $label
+              | if (($v.utilization | type) == "number") and ($v | has("resets_at")) then
+                  "util|" + $label + "|" + (($v.utilization // 0) | round | tostring) + "|"
+                    + (if ($v.resets_at) then ((try ($v.resets_at | fromdateiso8601) catch "") | tostring) else "" end)
+                elif ($v.is_enabled == true) and (($v.monthly_limit | type) == "number") then
+                  "credits|" + $label + "|" + (($v.utilization // 0) | round | tostring) + "|"
+                    + ($v.used_credits | tostring) + "|" + ($v.monthly_limit | tostring) + "|"
+                    + ($v.currency // "USD")
+                else empty end
+            ' 2>/dev/null
+            ;;
+        python3)
+            python3 -c '
+import sys, json, datetime
+try:
+    j = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if not isinstance(j, dict): sys.exit(0)
+skip = ("five_hour", "seven_day")
+for k, v in j.items():
+    if k in skip or not isinstance(v, dict): continue
+    if k == "extra_usage": label = "extra"
+    elif k.startswith("seven_day_"): label = k[len("seven_day_"):]
+    else: label = k
+    util = v.get("utilization")
+    if isinstance(util, (int, float)) and "resets_at" in v:
+        pct = round(util or 0)
+        r = v.get("resets_at")
+        ep = ""
+        if r:
+            try:
+                ep = int(datetime.datetime.fromisoformat(str(r).replace("Z", "+00:00")).timestamp())
+            except Exception:
+                ep = ""
+        print("util|" + label + "|" + str(pct) + "|" + str(ep))
+    elif v.get("is_enabled") is True and isinstance(v.get("monthly_limit"), (int, float)):
+        pct = round(v.get("utilization") or 0)
+        print("credits|" + label + "|" + str(pct) + "|" + str(v.get("used_credits")) + "|" + str(v.get("monthly_limit")) + "|" + str(v.get("currency") or "USD"))
+' 2>/dev/null
+            ;;
+        node)
+            node -e "
+let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+  try{
+    const j=JSON.parse(d);
+    const skip=new Set(['five_hour','seven_day']);
+    for(const [key,val] of Object.entries(j)){
+      if(skip.has(key)||val==null||typeof val!=='object')continue;
+      const label=key==='extra_usage'?'extra':key.replace(/^seven_day_/,'');
+      if(typeof val.utilization==='number' && 'resets_at' in val){
+        const pct=Math.round(val.utilization||0);
+        const r=val.resets_at?Math.floor(new Date(val.resets_at).getTime()/1000):'';
+        console.log('util|'+label+'|'+pct+'|'+r);
+      }
+      else if(val.is_enabled===true && typeof val.monthly_limit==='number'){
+        const pct=Math.round(val.utilization||0);
+        console.log('credits|'+label+'|'+pct+'|'+val.used_credits+'|'+val.monthly_limit+'|'+(val.currency||'USD'));
+      }
+    }
+  }catch(e){}
+})" 2>/dev/null
+            ;;
+        *)
+            : # awk backend: no JSON runtime for the nested usage shape
+            ;;
+    esac
 }
 
 TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
@@ -451,7 +761,7 @@ get_oauth_token() {
         blob=$(security find-generic-password -s "Claude Code-credentials" -w 2>/dev/null)
         if [ -n "$blob" ]; then
             local token
-            token=$(echo "$blob" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).claudeAiOauth?.accessToken??'')}catch{console.log('')}})" 2>/dev/null)
+            token=$(printf '%s' "$blob" | extract_access_token)
             [ -n "$token" ] && { echo "$token"; return 0; }
         fi
     fi
@@ -460,7 +770,7 @@ get_oauth_token() {
     local creds_file="$home_dir/.claude/.credentials.json"
     if [ -f "$creds_file" ]; then
         local token
-        token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).claudeAiOauth?.accessToken??'')}catch{console.log('')}" "$creds_file" 2>/dev/null)
+        token=$(extract_access_token < "$creds_file")
         [ -n "$token" ] && { echo "$token"; return 0; }
     fi
 
@@ -537,33 +847,7 @@ if [ -n "$extra_data" ]; then
     # without code changes; this replaced a hardcoded parser that ignored
     # seven_day_opus, seven_day_omelette, and similar codename slots
     # entirely.
-    api_records=$(echo "$extra_data" | node -e "
-let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
-  try{
-    const j=JSON.parse(d);
-    const skip=new Set(['five_hour','seven_day']);
-    for(const [key,val] of Object.entries(j)){
-      if(skip.has(key)||val==null||typeof val!=='object')continue;
-      // Strip the seven_day_ prefix so 'seven_day_opus' renders as 'opus';
-      // map the special-cased extra_usage to the historical 'extra' label.
-      const label=key==='extra_usage'?'extra':key.replace(/^seven_day_/,'');
-      // Pattern A — utilization + resets_at (sonnet/opus/cowork/...).
-      if(typeof val.utilization==='number' && 'resets_at' in val){
-        const pct=Math.round(val.utilization||0);
-        const r=val.resets_at?Math.floor(new Date(val.resets_at).getTime()/1000):'';
-        console.log('util|'+label+'|'+pct+'|'+r);
-      }
-      // Pattern B — prepaid credits (extra_usage shape).
-      else if(val.is_enabled===true && typeof val.monthly_limit==='number'){
-        const pct=Math.round(val.utilization||0);
-        const used=(val.used_credits/100).toFixed(2);
-        const lim=(val.monthly_limit/100).toFixed(2);
-        const cur=val.currency||'USD';
-        console.log('credits|'+label+'|'+pct+'|'+used+'|'+lim+'|'+cur);
-      }
-    }
-  }catch(e){}
-})" 2>/dev/null)
+    api_records=$(printf '%s' "$extra_data" | _parse_usage)
     if [ -n "$api_records" ]; then
         while IFS= read -r api_line; do
             [ -n "$api_line" ] && rate_records+=("$api_line")
@@ -609,7 +893,10 @@ if [ "${#rate_records[@]}" -gt 0 ]; then
                 fi
                 ;;
             credits)
-                pct="$f3"; used="$f4"; lim="$f5"; cur="$f6"
+                pct="$f3"; cur="$f6"
+                # f4 / f5 arrive as raw integer cents; format to 2 decimals here.
+                used=$(awk "BEGIN {printf \"%.2f\", ${f4:-0}/100}")
+                lim=$(awk "BEGIN {printf \"%.2f\", ${f5:-0}/100}")
                 bar=$(build_bar "$pct" "$bar_width")
                 color=$(color_for_pct "$pct")
                 lbl_padded=$(printf "%-${label_pad}s" "$lbl")
@@ -653,7 +940,7 @@ fi
 if $update_needs_check; then
     latest_tag=$(curl -s --max-time 3 \
         "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null \
-        | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{console.log(JSON.parse(d).tag_name??'')}catch{console.log('')}})" 2>/dev/null)
+        | extract_tag)
     if [ -n "$latest_tag" ]; then
         latest_ver="${latest_tag#v}"
         echo "$latest_ver" > "$update_cache"
@@ -715,7 +1002,10 @@ if [ "$statusline_mode" = "compact" ]; then
                 fi
                 ;;
             credits)
-                pct="$f3"; used="$f4"; lim="$f5"; cur="$f6"
+                pct="$f3"; cur="$f6"
+                # f4 / f5 arrive as raw integer cents; format to 2 decimals here.
+                used=$(awk "BEGIN {printf \"%.2f\", ${f4:-0}/100}")
+                lim=$(awk "BEGIN {printf \"%.2f\", ${f5:-0}/100}")
                 color=$(color_for_pct "$pct")
                 if [ "$cur" = "USD" ]; then sym='$'; else sym="${cur} "; fi
                 compact_line+="${sep}${white}${clbl}${reset} ${color}${sym}${used}${dim}/${reset}${white}${sym}${lim}${reset}"
