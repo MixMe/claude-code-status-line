@@ -2,7 +2,7 @@
 
 [![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.5.2-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
+[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 
@@ -30,7 +30,7 @@ One command — installs fresh or updates existing:
 curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash
 ```
 
-Restart Claude Code to apply. No dependencies to install — uses `node` that ships with Claude Code.
+Restart Claude Code to apply. No dependencies to install — the status line parses JSON with whichever of `jq`, `python3`, or `node` is already on your system, and falls back to a pure `awk` parser (always present wherever `bash` runs) if none are. It no longer requires Node — Claude Code's native install stopped bundling it.
 
 **Windows (PowerShell):**
 
@@ -83,8 +83,26 @@ categories Anthropic adds in the future appear without a code change.
 ## Requirements
 
 - Claude Code v2.1.80+
-- `bash` 4+, `curl`
+- `bash` 3.2+, `curl`, plus the standard POSIX tools (`awk`, `sed`, `grep`, `date`) — all present by default on macOS, Linux, and Git Bash
 - macOS, Linux, or Windows (WSL / Git Bash)
+
+**JSON parsing** is automatic and degrades gracefully: the script picks the first of `jq` → `python3` → `node` that is installed, and if none are, falls back to a built-in `awk` parser. Under the `awk` fallback the core line still renders (model, context, 5-hour, 7-day); only the `/api/oauth/usage` extras (per-model weekly limits and prepaid credits) are omitted, since that nested response needs a real JSON parser. For the full feature set, install any one of `jq` / `python3` / `node` (`jq` recommended — `brew install jq`, `apt install jq`).
+
+> **Upgrading from ≤ v1.5.x and seeing `Claude | ctx 0% (0/200k)`?** Earlier versions hard-depended on `node`. When Claude Code switched to a native install (no bundled Node) — or after a Homebrew Node upgrade left `node` keg-only and off `PATH` — that dependency silently broke every field. v1.6.0 removes the hard Node dependency; re-run the installer (or `git pull`) to fix it.
+
+## Uninstall
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/MixMe/claude-code-status-line/main/install.sh | bash -s -- --uninstall
+```
+
+Or, from a local clone:
+
+```bash
+bash uninstall.sh            # also: bash install.sh --uninstall
+```
+
+This removes the `statusLine` entry from `~/.claude/settings.json` (leaving every other setting intact), deletes `~/.claude/statusline.sh`, clears caches, and removes `~/.config/claude-statusline/`. Pass `--keep-config` to preserve your `config` file. Restart Claude Code to apply.
 
 ## Statusline modes
 
@@ -158,6 +176,12 @@ STATUSLINE_MODE=compact
 `TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
 
 ## Changelog
+
+### v1.6.0
+- **Fix: status line went blank (`Claude | ctx 0% (0/200k)`) when Node left `PATH`.** Every field was parsed through `node`, so Claude Code's native install (which no longer bundles Node) — or a Homebrew `node` upgrade that left only a keg-only `node@NN` off `PATH` — silently zeroed out the entire line. The hard Node dependency is gone.
+- **Portable JSON parsing with graceful degradation.** The script now detects the best available parser at runtime — `jq` → `python3` → `node` → `awk` — and routes every parse through it. The `awk` last resort is always present wherever `bash` runs, so the core line (model, context, 5-hour, 7-day) renders even with none of the three JSON runtimes installed; only the nested `/api/oauth/usage` extras (per-model weekly limits, prepaid credits) need a real JSON parser and are skipped under `awk`. This makes the "zero-dependency" promise genuinely true again.
+- **`install.sh` no longer requires Node either** — it patches `settings.json` via the same `jq` / `python3` / `node` detection, and prints a manual snippet if none are present.
+- **New uninstaller.** `uninstall.sh` (also `install.sh --uninstall`, or `curl … | bash -s -- --uninstall`) removes the `statusLine` key from `settings.json`, deletes the installed script, clears caches, and removes the config dir (`--keep-config` to preserve it). Closes the long-standing "there is no uninstall" gap.
 
 ### v1.5.0
 - **Dynamic rate-limit discovery**: every non-null top-level field in the `/api/oauth/usage` response is now rendered as its own bar, so categories the previous parser ignored (`seven_day_opus`, `seven_day_omelette`, internal codename slots like `iguana_necktie`) are visible the moment Anthropic activates them. New limit types added in the future no longer need a code change to appear in the statusline.
