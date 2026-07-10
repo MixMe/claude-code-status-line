@@ -176,13 +176,25 @@ TMPDIR="${TMPDIR:-${TMP:-${TEMP:-/tmp}}}"
 rm -f "$TMPDIR/claude/statusline-usage-cache.json" "$TMPDIR/claude/statusline-extra-cache.json" \
       "$TMPDIR/claude/statusline-extra.lock" "$TMPDIR/claude/statusline-update-cache" 2>/dev/null
 
-# ── Patch settings.json (portable: jq > python3 > node) ──
+# ── Patch settings.json (portable: jq > python3/python > node) ──
 # The command stores a literal $HOME so Claude Code's shell expands it at
-# runtime. Whichever JSON tool is present is used; if none, we print the
-# snippet for the user to paste manually (no hard dependency on Node).
+# runtime. Whichever JSON tool WORKS is used; if none, we print the snippet
+# for the user to paste manually (no hard dependency on Node).
+#
+# Each candidate is functionally probed (actually executed), not just found
+# on PATH: on Windows, Microsoft Store "app execution alias" stubs put
+# python.exe / python3.exe on PATH even when Python is not installed — a
+# presence-only check selects the stub and the patch silently fails.
 SL_CMD='bash "$HOME/.claude/statusline.sh"'
 
-if have jq; then
+PYTHON_BIN=""
+if have python3 && [ "$(python3 -c 'print("ok")' 2>/dev/null)" = "ok" ]; then
+    PYTHON_BIN="python3"
+elif have python && [ "$(python -c 'print("ok")' 2>/dev/null)" = "ok" ]; then
+    PYTHON_BIN="python"
+fi
+
+if have jq && [ "$(printf '{"probe":1}' | jq -r '.probe' 2>/dev/null)" = "1" ]; then
     if [ -f "$SETTINGS" ] && jq -e '.statusLine' "$SETTINGS" >/dev/null 2>&1; then
         echo "statusLine already configured"
     elif [ -f "$SETTINGS" ]; then
@@ -193,8 +205,8 @@ if have jq; then
         jq -n --arg c "$SL_CMD" '{statusLine:{type:"command",command:$c}}' > "$SETTINGS"
         echo "Created $SETTINGS"
     fi
-elif have python3; then
-    python3 -c '
+elif [ -n "$PYTHON_BIN" ]; then
+    "$PYTHON_BIN" -c '
 import json, sys, os
 path, cmd = sys.argv[1], sys.argv[2]
 existed = os.path.exists(path)
@@ -210,7 +222,7 @@ else:
     open(path, "w").write(json.dumps(s, indent=2) + "\n")
     print(("Updated " if existed else "Created ") + path)
 ' "$SETTINGS" "$SL_CMD"
-elif have node; then
+elif have node && [ "$(node -e 'console.log("ok")' 2>/dev/null)" = "ok" ]; then
     node -e "
 const fs=require('fs');
 const path=process.argv[1];

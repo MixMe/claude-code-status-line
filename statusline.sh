@@ -17,8 +17,8 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
-# claude-code-statusline v1.6.0
-VERSION="1.6.0"
+# claude-code-statusline v1.6.1
+VERSION="1.6.1"
 REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
@@ -166,18 +166,43 @@ format_age() {
 # detect the best available JSON tool at runtime and route every parse
 # through it:
 #   jq      — purpose-built for JSON, first choice when present
-#   python3 — ubiquitous on Linux, common on dev macOS (Xcode CLT / brew)
+#   python3 — ubiquitous on Linux, common on dev macOS (Xcode CLT / brew);
+#             on Windows the real interpreter is usually `python`, so both
+#             names are probed and the working one is recorded in PYTHON_BIN
 #   node    — the historical backend, still fine when installed
 #   awk     — universal last resort; ALWAYS present wherever bash runs, but
 #             only powers the critical stdin fields (model, context, 5h/7d).
 #             The nested/dynamic /api/oauth/usage extras need a real JSON
 #             parser, so prepaid-credit / per-model rows are omitted under awk.
+#
+# Every candidate is FUNCTIONALLY probed — actually executed against a tiny
+# input — not merely looked up on PATH. `command -v` alone is a Windows trap:
+# Windows ships Microsoft Store "app execution aliases" (python.exe /
+# python3.exe stubs in %LOCALAPPDATA%\Microsoft\WindowsApps) that exist on
+# PATH even when Python is NOT installed; executing them prints "Python was
+# not found..." and fails. Under a presence-only check that stub won a
+# detection slot ahead of a working node, and — with every parse call's
+# stderr suppressed — collapsed the whole statusline back to
+# "Claude | ctx 0% (0/200k)" (the v1.6.0 Windows regression). Passing `-c`
+# arguments to the stub only prints the error (the Store window opens solely
+# on an argument-less interactive launch), so probing is safe and silent.
 have() { command -v "$1" >/dev/null 2>&1; }
 
+PYTHON_BIN=""
+probe_python() {
+    # `have` first: skips the fork on names that don't exist at all.
+    have "$1" && [ "$("$1" -c 'print("ok")' 2>/dev/null)" = "ok" ]
+}
+
 JSON_BACKEND="awk"
-if   have jq;      then JSON_BACKEND="jq"
-elif have python3; then JSON_BACKEND="python3"
-elif have node;    then JSON_BACKEND="node"
+if   have jq && [ "$(printf '{"probe":1}' | jq -r '.probe' 2>/dev/null)" = "1" ]; then
+    JSON_BACKEND="jq"
+elif probe_python python3; then
+    JSON_BACKEND="python3"; PYTHON_BIN="python3"
+elif probe_python python; then
+    JSON_BACKEND="python3"; PYTHON_BIN="python"
+elif have node && [ "$(node -e 'console.log("ok")' 2>/dev/null)" = "ok" ]; then
+    JSON_BACKEND="node"
 fi
 
 # Flat single-field extractors for two fixed-shape blobs (OAuth credential
@@ -225,7 +250,7 @@ _parse_settings_jq() {
 }
 
 _parse_input_python() {
-    python3 -c '
+    "$PYTHON_BIN" -c '
 import sys, json
 try:
     d = json.load(sys.stdin)
@@ -261,7 +286,7 @@ emit("seven_resets_epoch", g(d,"rate_limits","seven_day","resets_at"))
 }
 
 _parse_settings_python() {
-    printf '%s' "$1" | python3 -c '
+    printf '%s' "$1" | "$PYTHON_BIN" -c '
 import sys, json
 try:
     s = json.load(sys.stdin)
@@ -448,7 +473,7 @@ _parse_usage() {
             ' 2>/dev/null
             ;;
         python3)
-            python3 -c '
+            "$PYTHON_BIN" -c '
 import sys, json, datetime
 try:
     j = json.load(sys.stdin)
@@ -684,10 +709,14 @@ fi
 time_format="12h"
 statusline_mode="full"
 config_file="$HOME/.config/claude-statusline/config"
+# `tr -d '\r'` strips CRLF line endings: configs written by install.ps1
+# ≤ v1.6.0 (PowerShell Set-Content default) carried a trailing \r that made
+# `TIME_FORMAT=24h` read as "24h\r" and never match. The installer now
+# writes LF, but existing Windows installs keep their old config file.
 [ -f "$config_file" ] && {
-    fmt=$(grep '^TIME_FORMAT=' "$config_file" 2>/dev/null | cut -d= -f2)
+    fmt=$(grep '^TIME_FORMAT=' "$config_file" 2>/dev/null | cut -d= -f2 | tr -d '\r')
     [ -n "$fmt" ] && time_format="$fmt"
-    mode=$(grep '^STATUSLINE_MODE=' "$config_file" 2>/dev/null | cut -d= -f2)
+    mode=$(grep '^STATUSLINE_MODE=' "$config_file" 2>/dev/null | cut -d= -f2 | tr -d '\r')
     [ -n "$mode" ] && statusline_mode="$mode"
 }
 
