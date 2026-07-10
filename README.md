@@ -2,7 +2,7 @@
 
 [![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
+[![Version](https://img.shields.io/badge/version-1.6.1-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 
@@ -86,9 +86,11 @@ categories Anthropic adds in the future appear without a code change.
 - `bash` 3.2+, `curl`, plus the standard POSIX tools (`awk`, `sed`, `grep`, `date`) — all present by default on macOS, Linux, and Git Bash
 - macOS, Linux, or Windows (WSL / Git Bash)
 
-**JSON parsing** is automatic and degrades gracefully: the script picks the first of `jq` → `python3` → `node` that is installed, and if none are, falls back to a built-in `awk` parser. Under the `awk` fallback the core line still renders (model, context, 5-hour, 7-day); only the `/api/oauth/usage` extras (per-model weekly limits and prepaid credits) are omitted, since that nested response needs a real JSON parser. For the full feature set, install any one of `jq` / `python3` / `node` (`jq` recommended — `brew install jq`, `apt install jq`).
+**JSON parsing** is automatic and degrades gracefully: the script picks the first of `jq` → `python3` / `python` → `node` that actually **works** — each candidate is executed as a probe, not merely found on `PATH`, so Windows' Microsoft Store `python.exe` / `python3.exe` stub aliases can never be mistaken for a real interpreter — and if none do, falls back to a built-in `awk` parser. Under the `awk` fallback the core line still renders (model, context, 5-hour, 7-day); only the `/api/oauth/usage` extras (per-model weekly limits and prepaid credits) are omitted, since that nested response needs a real JSON parser. For the full feature set, install any one of `jq` / `python3` / `node` (`jq` recommended — `brew install jq`, `apt install jq`).
 
 > **Upgrading from ≤ v1.5.x and seeing `Claude | ctx 0% (0/200k)`?** Earlier versions hard-depended on `node`. When Claude Code switched to a native install (no bundled Node) — or after a Homebrew Node upgrade left `node` keg-only and off `PATH` — that dependency silently broke every field. v1.6.0 removes the hard Node dependency; re-run the installer (or `git pull`) to fix it.
+>
+> **Same blank line on Windows with v1.6.0?** That release's parser detection was fooled by Windows' Microsoft Store `python3` stub alias. v1.6.1 probes each candidate by executing it — re-run the installer to fix.
 
 ## Uninstall
 
@@ -176,6 +178,13 @@ STATUSLINE_MODE=compact
 `TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
 
 ## Changelog
+
+### v1.6.1
+- **Fix: Windows regression from v1.6.0 — status line collapsed to `Claude | ctx 0% (0/200k)`.** The v1.6.0 backend detection checked only that a command *exists* on `PATH`. Windows ships Microsoft Store "app execution alias" stubs (`python.exe` / `python3.exe` in `WindowsApps`) that sit on `PATH` even when Python is **not installed**; the stub won the `python3` detection slot ahead of a working `node`, every parse failed silently (stderr is suppressed by design), and all fields fell back to defaults. Every candidate is now **functionally probed** — actually executed against a tiny input — before being selected, so a broken tool can never shadow a working one. This also hardens the original macOS keg-only-node case the v1.6.0 change was aimed at.
+- **`python` (without the `3`) added as a detection candidate** after `python3` — a real Windows Python install provides `python.exe`, not `python3.exe`.
+- **Fix: `TIME_FORMAT=24h` ignored on Windows.** `install.ps1` wrote the config file with CRLF line endings, so bash read the value as `24h<CR>` and the `24h` comparison never matched. The installer now writes LF, and the statusline strips a stray `\r` when reading configs left behind by older installs.
+- **`install.ps1` brought to parity with `install.sh`**: asks for statusline mode (`full` / `compact`), preserves both existing settings on re-install, clears stale caches.
+- **`install.sh` patches `settings.json` via the same functional probing** (and gains the `python` candidate too).
 
 ### v1.6.0
 - **Fix: status line went blank (`Claude | ctx 0% (0/200k)`) when Node left `PATH`.** Every field was parsed through `node`, so Claude Code's native install (which no longer bundles Node) — or a Homebrew `node` upgrade that left only a keg-only `node@NN` off `PATH` — silently zeroed out the entire line. The hard Node dependency is gone.
