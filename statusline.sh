@@ -18,7 +18,7 @@ unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
 # claude-code-statusline v1.6.1
-VERSION="1.6.1"
+VERSION="1.6.2"
 REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
@@ -542,6 +542,13 @@ five_pct="" five_resets_epoch="" seven_pct="" seven_resets_epoch=""
 effort="default" thinking_setting="" bypass_perms=false
 
 while IFS='=' read -r key val; do
+    # Strip a trailing CR: on Windows the python backend's print() writes
+    # CRLF line endings (stdout text mode), so every value would otherwise
+    # arrive as "1000000\r". A lone \r makes `[ -ge ]` integer tests error
+    # out (→ format_tokens prints the raw number), collapses `$(( ))` sums to
+    # 0, and breaks epoch math (→ no rate-limit time-left). Same defence the
+    # config reader already applies with `tr -d '\r'`.
+    val=${val%$'\r'}
     declare "$key=$val"
 done < <(node_parse)
 

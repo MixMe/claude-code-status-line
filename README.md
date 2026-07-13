@@ -2,7 +2,7 @@
 
 [![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.6.1-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
+[![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 
@@ -178,6 +178,10 @@ STATUSLINE_MODE=compact
 `TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
 
 ## Changelog
+
+### v1.6.2
+- **Fix: Windows numbers rendered raw and rate-limit time-left went missing** (e.g. `ctx 13% (0/1000000)` instead of `ctx 13% (0/1.0m)`, and `5h 39%` with no `2h 1m` reset countdown). When the JSON backend is Windows `python`, `print()` emits CRLF line endings, so every parsed value arrived with a trailing `\r`. That made `[ -ge ]` integer tests error out (so `format_tokens` printed the raw number instead of `1.0m`/`130k`), collapsed the `input_tokens + cache_*` context sum to `0`, and broke the reset-epoch math (so no time-left was shown). The stdin parse loop now strips a trailing `\r` from every value — the same defence the config reader already used.
+- **`install.ps1` interactive picker brought to full parity with `install.sh`.** Time format and statusline mode are now chosen from an **arrow-key menu** (↑/↓/←/→, `j`/`k`, number keys, Enter to confirm), with the current value pre-highlighted — no more typing `12h` / `full` by hand. Falls back to keeping the current value when there is no interactive console (piped install / CI), mirroring the macOS `has_tty` skip.
 
 ### v1.6.1
 - **Fix: Windows regression from v1.6.0 — status line collapsed to `Claude | ctx 0% (0/200k)`.** The v1.6.0 backend detection checked only that a command *exists* on `PATH`. Windows ships Microsoft Store "app execution alias" stubs (`python.exe` / `python3.exe` in `WindowsApps`) that sit on `PATH` even when Python is **not installed**; the stub won the `python3` detection slot ahead of a working `node`, every parse failed silently (stderr is suppressed by design), and all fields fell back to defaults. Every candidate is now **functionally probed** — actually executed against a tiny input — before being selected, so a broken tool can never shadow a working one. This also hardens the original macOS keg-only-node case the v1.6.0 change was aimed at.
