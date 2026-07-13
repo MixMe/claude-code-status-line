@@ -34,23 +34,76 @@ if (Test-Path $ConfigFile) {
     if ($existing) { $StatuslineMode = $existing }
 }
 
-# ── Time format ───────────────────────────────────────
-$input_fmt = Read-Host "Time format [12h = 2:34pm / 24h = 14:34] (current: $TimeFormat). Enter 12h or 24h, or press Enter to keep"
-$input_fmt = $input_fmt.Trim()
-if ($input_fmt -eq "12h" -or $input_fmt -eq "24h") {
-    $TimeFormat = $input_fmt
-} elseif ($input_fmt -ne "") {
-    Write-Host "  Unknown value '$input_fmt', keeping $TimeFormat"
+# ── Generic interactive selector ──────────────────────
+# PowerShell port of install.sh's select_option: arrow keys / j,k / 1..9 to
+# move, Enter to confirm, q to keep current. The current value is
+# pre-highlighted (matches the macOS installer — no manual typing). Returns
+# the chosen value; falls back to keeping the current value when there is no
+# interactive console (piped install, CI), mirroring the macOS `has_tty` skip.
+function Select-Option {
+    param(
+        [string]$Prompt,
+        [int]$InitialIndex,
+        [string[]]$Labels,
+        [string[]]$Values
+    )
+    $n = $Labels.Count
+    $selected = $InitialIndex
+    if ($selected -lt 0 -or $selected -ge $n) { $selected = 0 }
+
+    # No interactive console → keep current selection (ReadKey would throw).
+    if ([Console]::IsInputRedirected) { return $Values[$selected] }
+
+    Write-Host $Prompt
+    try {
+        $startTop = [Console]::CursorTop
+        [Console]::CursorVisible = $false
+
+        $render = {
+            [Console]::SetCursorPosition(0, $startTop)
+            for ($i = 0; $i -lt $n; $i++) {
+                if ($i -eq $selected) {
+                    Write-Host ("  > " + $Labels[$i]).PadRight(72) -ForegroundColor Cyan
+                } else {
+                    Write-Host ("    " + $Labels[$i]).PadRight(72) -ForegroundColor DarkGray
+                }
+            }
+        }
+
+        & $render
+        while ($true) {
+            $key = [Console]::ReadKey($true)
+            $k = $key.Key
+            if ($k -eq 'Enter' -or $k -eq 'Q') { break }
+            elseif ($k -eq 'UpArrow' -or $k -eq 'LeftArrow' -or $k -eq 'K') { $selected = ($selected - 1 + $n) % $n }
+            elseif ($k -eq 'DownArrow' -or $k -eq 'RightArrow' -or $k -eq 'J') { $selected = ($selected + 1) % $n }
+            elseif ([char]::IsDigit($key.KeyChar) -and $key.KeyChar -ne '0') {
+                $idx = [int]::Parse([string]$key.KeyChar) - 1
+                if ($idx -lt $n) { $selected = $idx }
+            }
+            & $render
+        }
+    } catch {
+        # Any console/cursor limitation → silently keep the current selection.
+    } finally {
+        try { [Console]::CursorVisible = $true } catch { }
+    }
+    return $Values[$selected]
 }
 
+# ── Time format ───────────────────────────────────────
+$fmtInitial = if ($TimeFormat -eq "24h") { 1 } else { 0 }
+$TimeFormat = Select-Option "Select time format (arrow keys / j,k / 1,2, Enter to confirm):" `
+    $fmtInitial `
+    @("12-hour  (2:34pm)", "24-hour  (14:34)") `
+    @("12h", "24h")
+
 # ── Statusline mode ───────────────────────────────────
-$input_mode = Read-Host "Statusline mode [full = multi-line / compact = single line] (current: $StatuslineMode). Enter full or compact, or press Enter to keep"
-$input_mode = $input_mode.Trim()
-if ($input_mode -eq "full" -or $input_mode -eq "compact") {
-    $StatuslineMode = $input_mode
-} elseif ($input_mode -ne "") {
-    Write-Host "  Unknown value '$input_mode', keeping $StatuslineMode"
-}
+$modeInitial = if ($StatuslineMode -eq "compact") { 1 } else { 0 }
+$StatuslineMode = Select-Option "Select statusline mode (arrow keys / j,k / 1,2, Enter to confirm):" `
+    $modeInitial `
+    @("full     (multi-line: context, rate-limit bars, system info)", "compact  (single line: model, context, rate-limit remainders)") `
+    @("full", "compact")
 
 # The config is consumed by a bash script (Git Bash), so it MUST be written
 # with LF line endings and no BOM. PowerShell's Set-Content default (CRLF)
