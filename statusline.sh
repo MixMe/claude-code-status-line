@@ -17,8 +17,8 @@ set -f
 unset LC_ALL
 export LC_NUMERIC=C LC_TIME=C
 
-# claude-code-statusline v1.6.1
-VERSION="1.6.2"
+# claude-code-statusline v1.6.3
+VERSION="1.6.3"
 REPO="MixMe/claude-code-status-line"
 
 input=$(cat)
@@ -1017,6 +1017,7 @@ if [ "$statusline_mode" = "compact" ]; then
     compact_line="${model_color}${model_name}${reset}"
     [ -n "$session_id" ] && compact_line+=" ${dim}chat:${session_id}${reset}"
     compact_line+="${sep}${ctx_color}ctx ${ctx_pct}%${reset} ${dim}(${used_fmt}/${total_fmt})${reset}"
+    [ -n "$cache_hit_str" ] && compact_line+=" ${cache_hit_str}"
 
     for rec in "${rate_records[@]}"; do
         IFS='|' read -r kind lbl f3 f4 f5 f6 <<< "$rec"

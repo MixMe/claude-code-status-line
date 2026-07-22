@@ -2,7 +2,7 @@
 
 [![ShellCheck](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/MixMe/claude-code-status-line/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Version](https://img.shields.io/badge/version-1.6.2-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
+[![Version](https://img.shields.io/badge/version-1.6.3-blue.svg)](https://github.com/MixMe/claude-code-status-line/releases)
 ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
 ![Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen)
 
@@ -178,6 +178,9 @@ STATUSLINE_MODE=compact
 `TIME_FORMAT` accepts `12h` or `24h`. `STATUSLINE_MODE` accepts `full` or `compact`.
 
 ## Changelog
+
+### v1.6.3
+- **Compact mode now shows the cache hit rate (`cache:N%`).** The metric already existed in full mode; compact mode omitted it. It now renders right after the context `(used/total)` block — same position, same value, same source — so both layouts report the identical cache percentage. Hidden until there is context usage, exactly as in full mode.
 
 ### v1.6.2
 - **Fix: Windows numbers rendered raw and rate-limit time-left went missing** (e.g. `ctx 13% (0/1000000)` instead of `ctx 13% (0/1.0m)`, and `5h 39%` with no `2h 1m` reset countdown). When the JSON backend is Windows `python`, `print()` emits CRLF line endings, so every parsed value arrived with a trailing `\r`. That made `[ -ge ]` integer tests error out (so `format_tokens` printed the raw number instead of `1.0m`/`130k`), collapsed the `input_tokens + cache_*` context sum to `0`, and broke the reset-epoch math (so no time-left was shown). The stdin parse loop now strips a trailing `\r` from every value — the same defence the config reader already used.
